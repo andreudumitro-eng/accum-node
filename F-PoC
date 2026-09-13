@@ -1,0 +1,114 @@
+ ACCUM Core
+
+A next-generation blockchain protocol with **Fair Proof-of-Contribution (F-PoC)** consensus — a novel hybrid consensus mechanism designed for fair distribution, ASIC resistance, and long-term miner participation.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/built%20with-Rust-red)](https://www.rust-lang.org/)
+[![Version](https://img.shields.io/badge/version-3.2-blue)](https://github.com/andreudumitro-eng/accum-core)
+
+## 🌟 Key Features
+
+### 🔥 **Fair Proof-of-Contribution (F-PoC)**
+- **60% Mining Shares** — Proof-of-work contributions
+- **20% Loyalty Factor** — Rewards long-term participants
+- **20% Bonded Stake** — Minimum 1 ACM bond with slashing
+
+### ⚡ **ASIC Resistant**
+- **Argon2id** with 256MB memory
+- CPU-friendly mining design
+- 2 iterations, 4 parallelism
+
+### 🌐 **Built-in P2P Network**
+- libp2p-based networking
+- Automatic peer discovery
+- Share propagation
+
+### 💾 **Persistent Storage**
+- RocksDB backend
+- Efficient block storage
+- Fast synchronization
+
+### ⛏️ **Integrated Miner**
+- Solo mining ready
+- Real-time difficulty adjustment
+- Automatic block submission
+
+## 📋 Technical Specifications
+
+| Parameter | Value |
+|-----------|-------|
+| Block Time | 60 seconds |
+| Block Reward | 500,000 LYT (0.05 ACM) |
+| Epoch Reward | 720,000,000 LYT (72 ACM) |
+| Epoch Length | 1,440 blocks |
+| Max Supply | 150,000,000 ACM |
+| Minimum Bond | 1 ACM |
+| Bond Lockup | 20,160 blocks (~14 days) |
+| Difficulty Adjustment | Every 120 blocks (±25% max) |
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Rust 1.70+ (install via [rustup](https://rustup.rs/))
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/andreudumitro-eng/accum-core
+cd accum-core
+
+# Build and run
+cargo build --release
+cargo run --release
+🗺️ Roadmap
+Phase 1: Foundation (Q1 2026) ✅
+Core protocol implementation
+
+Argon2id PoW integration
+
+Basic P2P networking
+
+RocksDB storage
+
+Phase 2: Testnet (Q1-2026) 🚧
+Public testnet launch
+
+Multi-node synchronization
+
+Performance optimization
+
+Bug bounties
+
+Phase 3: Mainnet (Q2-2026)📅
+Security audit
+
+Mainnet launch
+
+Wallet implementation
+
+Explorer development
+
+Phase 4: Ecosystem (Q2-3-2026) 🌐
+Web wallet
+
+Mining pools support
+
+Exchange listings
+
+Developer tools
+
+📚 Documentation
+Technical Specification
+
+🤝 Contributing
+Contributions welcome! Please:
+
+Fork the repository
+
+Create a feature branch
+
+Submit a Pull Request
+
+📄 License
+MIT License - see LICENSE file.
