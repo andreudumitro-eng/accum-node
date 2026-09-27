@@ -319,12 +319,14 @@ impl PeerConnection {
                 Ok(Some(msg))
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
             Err(e) => {
                 println!("🔍 read error: {:?}", e);
                 Err(e)
-            }   // ← закрывает Err(e) => { ... }
-        }       // ← закрывает внешний match
-    }           // ← закрывает функцию receive_message
+            }
+        }
+    }
+            
 
     pub fn send_ping(&mut self) -> Result<(), std::io::Error> {
         let nonce = thread_rng().next_u64();
