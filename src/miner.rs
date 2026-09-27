@@ -223,7 +223,8 @@ impl Share {
             return Err("Share too far in future");
         }
 
-        if !Argon2Cache::prefilter(&self.header.to_bytes(), self.nonce, target_share) {
+        let prefilter_target = target_share.prefilter_target();
+        if !Argon2Cache::prefilter(&self.header.to_bytes(), self.nonce, &prefilter_target) {
             return Err("Prefilter rejected");
         }
 
@@ -372,13 +373,7 @@ impl AggregatedShare {
     }
 
     pub fn size_bytes(&self) -> usize {
-        std::mem::size_of::<MinerId>()
-            + 4
-            + 32
-            + self.signature.len()
-            + self.pubkey.len()
-            + 8
-            + 4
+        std::mem::size_of::<MinerId>() + 4 + 32 + self.signature.len() + self.pubkey.len() + 8 + 4
     }
 }
 
@@ -399,7 +394,11 @@ impl AggregatedSharePool {
         }
     }
 
-    pub fn add_aggregate(&mut self, agg: AggregatedShare, shares: &[Share]) -> Result<bool, String> {
+    pub fn add_aggregate(
+        &mut self,
+        agg: AggregatedShare,
+        shares: &[Share],
+    ) -> Result<bool, String> {
         if self.verified_roots.contains(&agg.merkle_root) {
             return Ok(false);
         }
@@ -512,7 +511,7 @@ impl SharePool {
         Ok(true)
     }
 
-    fn evict_oldest(&mut self) -> Result<(), &'static str> {
+    pub fn evict_oldest(&mut self) -> Result<(), &'static str> {
         let mut target_miner = None;
         let mut max_shares = 0;
 

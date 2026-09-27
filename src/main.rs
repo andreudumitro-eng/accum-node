@@ -5,48 +5,26 @@
 // FULLY WORKING NODE WITH SOLO MINING + EQUIVOCATION SLASHING
 // ============================================================
 
-use argon2::{Algorithm, Argon2, Params, Version};
 use bincode;
 use dirs;
 use hex;
 use lazy_static;
-use parking_lot::RwLock;
-use rand::rngs::OsRng;
-use rand::{thread_rng, RngCore};
-use ripemd::Ripemd160;
-use rocksdb::checkpoint::Checkpoint as RocksdbCheckpoint;
-use rocksdb::{IteratorMode, Options, DB};
-use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1, SecretKey};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::env;
-use std::fs;
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use secp256k1::Secp256k1;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::signal;
 use tokio::time::Duration;
-use toml;
-use warp::Filter;
 
 mod constants;
 use constants::*;
-mod types;
-use types::*;
 mod crypto;
-use crypto::*;
+mod types;
 mod wallet;
 use wallet::*;
 mod block;
 use block::*;
-mod difficulty;
-use difficulty::*;
 mod config;
+mod difficulty;
 use config::*;
 mod storage;
 use storage::*;
@@ -54,21 +32,19 @@ mod miner;
 use miner::*;
 mod consensus;
 use consensus::*;
-mod network;
-use network::*;
-mod p2p;
-use p2p::*;
+mod epoch_commit;
 mod genesis;
-use genesis::*;
+mod network;
 mod node;
+mod p2p;
 use node::*;
 mod rpc;
 use rpc::*;
 
-
 lazy_static::lazy_static! {
     pub static ref SECP: Secp256k1<secp256k1::All> = Secp256k1::new();
 }
+
 
 // ============================================================
 // GRACEFUL SHUTDOWN
@@ -89,11 +65,9 @@ pub fn is_saving_state() -> bool {
     SAVING_STATE.load(AtomicOrdering::Relaxed)
 }
 
-
 // ============================================================
 // UTILITY FUNCTIONS
 // ============================================================
-
 
 pub fn format_duration(secs: u64) -> String {
     let hours = secs / 3600;
@@ -102,11 +76,9 @@ pub fn format_duration(secs: u64) -> String {
     format!("{:02}:{:02}:{:02}", hours, mins, secs)
 }
 
-
 // ============================================================
 // НОДА
 // ============================================================
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -117,12 +89,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║         WORKING NODE WITH SOLO MINING + SLASHING             ║");
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 
+    let genesis_mode = args.iter().any(|a| a == "--genesis");
+
     match args.get(1).map(|s| s.as_str()) {
         Some("wallet") => {
             handle_wallet_command(&args)?;
         }
         Some("node") => {
-            run_node().await?;
+            run_node(genesis_mode).await?;
         }
         Some("backup") => {
             handle_backup_command(&args)?;
@@ -134,9 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             handle_info_command()?;
         }
         _ => {
-            // Если нет команды, запускаем ноду по умолчанию
             println!("No command specified, starting node...\n");
-            run_node().await?;
+            run_node(genesis_mode).await?;
         }
     }
 
@@ -153,11 +126,6 @@ fn print_help() {
     println!("  backup                  Create database backup");
     println!("  restore <timestamp>     Restore from backup");
     println!("  info                    Show node info");
-    println!("\nExamples:");
-    println!("  accum node");
-    println!("  accum wallet create");
-    println!("  accum wallet balance 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa");
-    println!("  accum backup");
 }
 
 fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -170,14 +138,8 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
             println!("🔑 Public Key:  {}", hex::encode(&wallet.public_key));
             println!("\n⚠️  SAVE YOUR PRIVATE KEY SECURELY:");
             println!("📜 Private Key: {}", hex::encode(&wallet.secret_key));
-            println!("\n💡 To use this wallet, save the private key and run:");
-            println!(
-                "   echo '{}' > ~/.accum/wallet.key",
-                hex::encode(&wallet.secret_key)
-            );
         }
         Some("show") => {
-            // ПОКАЗАТЬ ПРИВАТНЫЙ КЛЮЧ
             let wallet_path = dirs::home_dir()
                 .ok_or("Cannot find home dir")?
                 .join(".accum")
@@ -205,14 +167,11 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
             println!("⚠️  Close this window after copying the key!");
             println!("═══════════════════════════════════════════\n");
             println!("📜 Private Key: {}", wallet_data.private_key);
-            println!("\n💡 To import this wallet, create wallet.json with:");
-            println!("   {{\"private_key\": \"{}\"}}", wallet_data.private_key);
             println!("\n✅ Press ENTER to continue...");
             let mut input = String::new();
             std::io::stdin().read_line(&mut input)?;
         }
         Some("export") => {
-            // ЭКСПОРТ КОШЕЛЬКА В ФАЙЛ
             let wallet_path = dirs::home_dir()
                 .ok_or("Cannot find home dir")?
                 .join(".accum")
@@ -220,7 +179,6 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
 
             if !wallet_path.exists() {
                 println!("❌ Wallet file not found at: {}", wallet_path.display());
-                println!("   Create a wallet first with: accum wallet create");
                 return Ok(());
             }
 
@@ -239,23 +197,16 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
 
             println!("\n✅ Wallet exported successfully!");
             println!("📁 Backup saved to: {}", backup_path.display());
-            println!("\n💡 To restore, copy this file to:");
-            println!("   {}", wallet_path.display());
-            println!("\n📜 Private Key in the file:");
-            let content = std::fs::read_to_string(&wallet_path)?;
-            println!("   {}", content.trim());
         }
         Some("balance") => {
             let address = args.get(3).ok_or("Address required")?;
 
             println!("📊 Checking balance for {}...", address);
 
-            // Пробуем открыть локальную базу mainnet
             let storage = match ProductionStorage::new("mainnet") {
                 Ok(s) => s,
                 Err(e) => {
                     println!("❌ Cannot open database: {}", e);
-                    println!("   Make sure the node has been run at least once.");
                     return Ok(());
                 }
             };
@@ -278,7 +229,6 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
             let amount_str = args.get(4).ok_or("Amount required")?;
             let amount: u64 = amount_str.parse().map_err(|_| "Invalid amount")?;
 
-            // 1. Загружаем кошелёк
             let wallet_path = dirs::home_dir()
                 .ok_or("Cannot find home dir")?
                 .join(".accum")
@@ -303,7 +253,6 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
             println!("📤 To:     {}", to);
             println!("💰 Amount: {} LYT", amount);
 
-            // 2. Открываем базу и получаем UTXO
             let storage = ProductionStorage::new("mainnet")?;
             let utxos = storage.get_utxos_by_address(&wallet.address)?;
 
@@ -314,7 +263,6 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
 
             println!("📦 Found {} UTXO(s)", utxos.len());
 
-            // 3. Создаём и подписываем транзакцию
             let fee = 1000u64;
             let tx = match wallet.create_simple_tx(&utxos, to, amount, fee) {
                 Ok(tx) => tx,
@@ -331,7 +279,6 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
             println!("   Fee: {} LYT", fee);
             println!("   Size: {} bytes", tx_bytes.len());
 
-            // 4. Пытаемся отправить через RPC
             println!(
                 "\n📡 Trying to broadcast via RPC (localhost:{})...",
                 RPC_PORT
@@ -353,14 +300,13 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
                         println!("   Response: {}", body);
                     } else {
                         println!("⚠️  Node returned error: {}", response.status());
-                        println!("   Raw tx (hex) — you can submit it manually later:");
+                        println!("   Raw tx (hex):");
                         println!("{}", tx_hex);
                     }
                 }
                 Err(e) => {
                     println!("⚠️  Could not connect to node RPC: {}", e);
-                    println!("   Make sure the node is running (`accum node`).");
-                    println!("\n   Raw tx (hex) — save it and submit later:");
+                    println!("\n   Raw tx (hex):");
                     println!("{}", tx_hex);
                 }
             }
@@ -372,16 +318,10 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
             println!("\nUsage: accum wallet <command>");
             println!("\nCommands:");
             println!("  create  - Create a new wallet");
-            println!("  show    - Show your private key (⚠️  BE CAREFUL!)");
+            println!("  show    - Show your private key");
             println!("  export  - Export wallet to backup file");
             println!("  balance - Check wallet balance");
             println!("  send    - Send coins to another address");
-            println!("\nExamples:");
-            println!("  accum wallet create");
-            println!("  accum wallet show");
-            println!("  accum wallet export");
-            println!("  accum wallet balance 1J6dR35iWewSTNbhuTxX1SB5KxBcGD72qN");
-            println!("  accum wallet send 1J6dR35iWewSTNbhuTxX1SB5KxBcGD72qN 1000");
         }
     }
     Ok(())
@@ -410,7 +350,6 @@ fn handle_info_command() -> Result<(), Box<dyn std::error::Error>> {
         Ok(s) => s,
         Err(e) => {
             println!("❌ Cannot open database: {}", e);
-            println!("   Run the node at least once: accum node");
             return Ok(());
         }
     };
@@ -438,55 +377,42 @@ fn handle_info_command() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_node() -> Result<(), Box<dyn std::error::Error>> {
+async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load()?;
     println!("📋 Loaded configuration from ~/.accum/config.toml");
 
     let node_arc = Node::new(config.clone())?;
 
-    // RPC сервер
+    // ---- RPC in a separate OS thread with its own tokio runtime ----
     if config.rpc.enabled {
         let rpc_node = node_arc.clone();
-        tokio::spawn(async move {
-            let rpc = RpcServer::new(rpc_node, config.rpc.port);
-            if let Err(e) = rpc.start().await {
-                eprintln!("❌ RPC server error: {}", e);
-            }
+        let rpc_port = config.rpc.port;
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("failed to build RPC runtime");
+            rt.block_on(async move {
+                let rpc = RpcServer::new(rpc_node, rpc_port);
+                if let Err(e) = rpc.start().await {
+                    eprintln!("❌ RPC server error: {}", e);
+                }
+            });
         });
         println!("📡 RPC server started on port {}", config.rpc.port);
     }
 
-    // Добавляем bond если майнинг включен
+    // ---- Bond for the local miner ----
     {
         let mut node = node_arc.write();
-        if config.mining.enabled {
+        if config.mining.enabled && !node.bonds.contains_key(&node.miner_id) {
             let miner_id = node.miner_id;
-            node.add_bond(miner_id, config.mining.bond);
-            println!("💰 Bond added: {} LYT", config.mining.bond);
+            let bond_amount = config.mining.bond.max(MINIMUM_BOND_LYT);
+            node.add_bond(miner_id, bond_amount);
+            println!("💰 Bond added: {} LYT", bond_amount);
         }
     }
-
-    // Graceful shutdown handler
-    let node_clone = node_arc.clone();
-    tokio::spawn(async move {
-        signal::ctrl_c().await.unwrap();
-        println!("\n\n⚠️  Received Ctrl+C");
-        println!("⏳ Shutting down, please wait...");
-        SHUTDOWN.store(true, AtomicOrdering::SeqCst);
-
-        // Сохраняем состояние
-        {
-            let node = node_clone.write();
-            set_saving_state(true);
-            let _ = node.storage.save_mempool(&node.mempool);
-            let _ = node.storage.flush();
-            println!("✅ State saved");
-        }
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        println!("👋 Goodbye!");
-        std::process::exit(0);
-    });
 
     println!("\n=== NODE STARTED ===");
     {
@@ -506,14 +432,121 @@ async fn run_node() -> Result<(), Box<dyn std::error::Error>> {
                 "⛏️  Solo mining ENABLED with {} threads",
                 config.mining.threads
             );
+            if genesis_mode {
+                println!(" Solo genesis mode: ENABLED (--genesis)");
+            } else {
+                println!(" Solo genesis mode: disabled (require peers)");
+            }
         } else {
             println!("⛏️  Solo mining DISABLED");
         }
     }
     println!("========================\n");
 
-    let mut node = node_arc.write();
-    node.run_with_graceful_shutdown()?;
+    // ---- Main loop in a separate OS thread, write-lock only during tick ----
+    let node_for_loop = node_arc.clone();
+    std::thread::spawn(move || {
+        println!("🚀 Node loop starting...");
+        loop {
+            if should_shutdown() {
+                println!("\n⏳ Shutting down (node loop)...");
+                let mut node = node_for_loop.write();
+                node.shutdown();
+                break;
+            }
 
-    Ok(())
+            {
+                let mut node = node_for_loop.write();
+                if let Err(e) = node.tick() {
+                    eprintln!("⚠️ tick error: {}", e);
+                }
+            }
+
+            // Backup outside the write-lock.
+            {
+                let node = node_for_loop.read();
+                let _ = node
+                    .storage
+                    .maybe_backup(node.height, node.config.advanced.backup_interval_blocks);
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
+
+    // ---- Mining thread ----
+    //
+    // Design notes:
+    //
+    //   - TOCTOU fix: the `can_mine` check and the `mine_block()` call are
+    //     done under the SAME write-lock, so no incoming block can land
+    //     between the sync check and the mining start.
+    //
+    //   - solo_ok = peers > 0 || ALLOW_SOLO_GENESIS. If we have at least one
+    //     peer, we are part of a network; otherwise, mining only proceeds
+    //     when explicitly allowed (genesis day).
+    //
+    //   - `attempted` = true means "we passed the gate and ran one mining
+    //     batch", NOT "we found a block". Finding a block or a share is
+    //     reported inside `mine_block` itself.
+    //
+    //   - The write-lock is held for the entire batch. With
+    //     MINING_BATCH_SIZE = 1000 and 8 threads this is ~125 ms — tolerable
+    //     for now, but see the TODO below.
+    //
+    // TODO (long-term): refactor to snapshot + apply.
+    //   1. Under read-lock: copy header, prev_hash, difficulty, targets.
+    //   2. Release lock, mine in a thread pool WITHOUT the lock.
+    //   3. If a block is found, re-acquire write-lock and verify
+    //      `self.last_hash() == header.prev_hash`. If it still matches,
+    //      apply; otherwise drop (someone beat us to it).
+    //   This removes the write-lock from the hashing hot path entirely.
+    if config.mining.enabled {
+        let node_for_miner = node_arc.clone();
+        std::thread::spawn(move || {
+            println!("⛏️  Mining thread started");
+            loop {
+                if should_shutdown() {
+                    println!("⏳ Shutting down (mining thread)...");
+                    break;
+                }
+
+                // Take write-lock ONCE. Check and mine under the same lock.
+                let attempted = {
+                    let mut node = node_for_miner.write();
+
+                    let peers = node.p2p.as_ref().map(|p| p.peer_count()).unwrap_or(0);
+                    let is_syncing = node.p2p.as_ref().map(|p| p.is_syncing()).unwrap_or(false);
+                    let synced = node.sync_progress() >= 0.99;
+                    let solo_ok = peers > 0 || genesis_mode;
+
+                    if !is_syncing && synced && solo_ok {
+                        node.mine_block();
+                        true
+                    } else {
+                        false
+                    }
+                }; // write-lock released here
+
+                if !attempted {
+                    // Not ready — wait a bit and re-check.
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                } else {
+                    // Mining batch finished quickly. Yield to other threads
+                    // (tick / RPC / P2P) before taking the write-lock again.
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        });
+    }
+
+    // ---- main waits for Ctrl+C ----
+    tokio::signal::ctrl_c().await?;
+    println!("\n⚠️  Received Ctrl+C");
+    SHUTDOWN.store(true, AtomicOrdering::SeqCst);
+
+    // Give threads time to save state.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    println!("👋 Goodbye!");
+    std::process::exit(0);
 }

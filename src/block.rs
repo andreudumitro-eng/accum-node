@@ -158,12 +158,30 @@ impl TxOut {
     pub fn create_p2pkh(address: &str) -> Result<Self, String> {
         let decoded = bs58::decode(address)
             .into_vec()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("Base58 decode error: {}", e))?;
+
         if decoded.len() != 25 {
-            return Err("Invalid address length".to_string());
+            return Err(format!(
+                "Invalid address length: expected 25, got {}",
+                decoded.len()
+            ));
+        }
+
+        if decoded[0] != 0x00 {
+            return Err(format!(
+                "Invalid address version: expected 0x00, got 0x{:02x}",
+                decoded[0]
+            ));
+        }
+
+        let payload = &decoded[0..21];
+        let expected_checksum = &Sha256::digest(&Sha256::digest(payload))[0..4];
+        if &decoded[21..25] != expected_checksum {
+            return Err("Invalid address checksum".to_string());
         }
 
         let pubkey_hash = &decoded[1..21];
+
         let mut script = Vec::with_capacity(25);
         script.push(0x76);
         script.push(0xA9);
@@ -215,9 +233,8 @@ impl TxIn {
         let signature = wallet.sign(&sighash)?;
 
         let mut script_sig = Vec::new();
-        let sig_der = signature;
-        script_sig.push(sig_der.len() as u8);
-        script_sig.extend_from_slice(&sig_der);
+        script_sig.push(signature.len() as u8);
+        script_sig.extend_from_slice(&signature);
 
         let pubkey = wallet.public_key_bytes();
         script_sig.push(pubkey.len() as u8);
@@ -367,27 +384,9 @@ impl Transaction {
     }
 
     pub fn txid(&self, _argon2: &mut Argon2Cache) -> Txid {
-        let mut data = Vec::new();
-
-        data.extend_from_slice(&self.version.to_le_bytes());
-        data.extend_from_slice(&(self.inputs.len() as u32).to_le_bytes());
-
-        for input in &self.inputs {
-            data.extend_from_slice(&input.prev_txid);
-            data.extend_from_slice(&input.prev_index.to_le_bytes());
-            data.extend_from_slice(&(input.script_sig.len() as u32).to_le_bytes());
-            data.extend_from_slice(&input.script_sig);
-            data.extend_from_slice(&input.sequence.to_le_bytes());
-        }
-
-        data.extend_from_slice(&(self.outputs.len() as u32).to_le_bytes());
-        for output in &self.outputs {
-            data.extend_from_slice(&output.value.to_le_bytes());
-            data.extend_from_slice(&(output.script_pubkey.len() as u32).to_le_bytes());
-            data.extend_from_slice(&output.script_pubkey);
-        }
-
-        data.extend_from_slice(&self.locktime.to_le_bytes());
+        // Единый канонический формат: тот же bincode, что и в serialize().
+        // Это гарантирует, что txid не разойдётся при смене версии bincode.
+        let data = bincode::serialize(self).expect("txid serialization failed");
 
         let hash1 = Sha256::digest(&data);
         let hash2 = Sha256::digest(&hash1);
@@ -402,22 +401,19 @@ impl Transaction {
     }
 
     pub fn sighash(&self, input_index: usize) -> [u8; 32] {
+        if input_index >= self.inputs.len() {
+            return [0u8; 32];
+        }
+
         let mut data = Vec::new();
 
         data.extend_from_slice(&self.version.to_le_bytes());
         data.extend_from_slice(&(self.inputs.len() as u32).to_le_bytes());
 
-        for (i, input) in self.inputs.iter().enumerate() {
+        for input in &self.inputs {
             data.extend_from_slice(&input.prev_txid);
             data.extend_from_slice(&input.prev_index.to_le_bytes());
-
-            if i == input_index {
-                data.extend_from_slice(&(0u32).to_le_bytes());
-            } else {
-                data.extend_from_slice(&(input.script_sig.len() as u32).to_le_bytes());
-                data.extend_from_slice(&input.script_sig);
-            }
-
+            data.extend_from_slice(&0u32.to_le_bytes());
             data.extend_from_slice(&input.sequence.to_le_bytes());
         }
 
@@ -459,7 +455,12 @@ impl Transaction {
             }
         }
 
-        let total_out: u64 = self.outputs.iter().map(|o| o.value).sum();
+        let mut total_out: u64 = 0;
+        for output in &self.outputs {
+            total_out = total_out
+                .checked_add(output.value)
+                .ok_or("Overflow in outputs")?;
+        }
         if total_out > MAX_SUPPLY_LYT {
             return Err("Output sum exceeds max supply");
         }
@@ -517,7 +518,9 @@ impl Transaction {
         for input in &self.inputs {
             let outpoint = input.outpoint();
             if let Some(output) = storage.get_utxo(&outpoint)? {
-                input_sum += output.value;
+                input_sum = input_sum
+                    .checked_add(output.value)
+                    .ok_or("Overflow in inputs")?;
             } else {
                 return Err("UTXO not found".to_string());
             }
@@ -525,7 +528,9 @@ impl Transaction {
 
         let mut output_sum = 0u64;
         for output in &self.outputs {
-            output_sum += output.value;
+            output_sum = output_sum
+                .checked_add(output.value)
+                .ok_or("Overflow in outputs")?;
         }
 
         if input_sum < output_sum {
@@ -550,6 +555,8 @@ impl Transaction {
         fee: u64,
         utxos: Vec<(OutPoint, TxOut)>,
     ) -> Result<Self, String> {
+        let required = amount.checked_add(fee).ok_or("Overflow in amount + fee")?;
+
         let mut inputs = Vec::new();
         let mut input_sum = 0u64;
 
@@ -560,14 +567,16 @@ impl Transaction {
                 script_sig: vec![],
                 sequence: 0xFFFFFFFF,
             });
-            input_sum += utxo.value;
+            input_sum = input_sum
+                .checked_add(utxo.value)
+                .ok_or("Overflow in input sum")?;
 
-            if input_sum >= amount + fee {
+            if input_sum >= required {
                 break;
             }
         }
 
-        if input_sum < amount + fee {
+        if input_sum < required {
             return Err("Insufficient funds".to_string());
         }
 

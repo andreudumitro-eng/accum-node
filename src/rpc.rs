@@ -3,9 +3,10 @@
 use crate::block::Transaction;
 use crate::crypto::Argon2Cache;
 use crate::format_duration;
+use crate::node::Node;
 use crate::p2p::P2PMessage;
 use crate::types::current_timestamp;
-use crate::node::Node;
+use bytes::Bytes;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use warp::Filter;
@@ -43,6 +44,26 @@ impl RpcServer {
                 0
             };
 
+            // Среднее время блока за последние 10
+            let avg = if node.timestamps.len() >= 2 {
+                let take = 10.min(node.timestamps.len() - 1);
+                let start = node.timestamps[node.timestamps.len() - 1 - take];
+                let end = *node.timestamps.last().unwrap();
+                (end.saturating_sub(start)) as f64 / take as f64
+            } else {
+                0.0
+            };
+
+            let now = crate::types::current_timestamp();
+            let since_last =
+                now.saturating_sub(node.blocks.last().map(|b| b.timestamp).unwrap_or(now));
+
+            let difficulty = node
+                .blocks
+                .last()
+                .map(|b| b.difficulty.to_difficulty())
+                .unwrap_or(1.0);
+
             warp::reply::json(&serde_json::json!({
                 "height": node.height,
                 "epoch": node.epoch,
@@ -58,6 +79,12 @@ impl RpcServer {
                 "mempool_size": node.mempool.len(),
                 "bond": node.miners.get(&node.miner_id).map(|m| m.bond).unwrap_or(0),
                 "argon2_avg_ms": avg_time,
+                // НОВЫЕ ПОЛЯ:
+                "last_block_nonce": node.last_nonce,
+                "last_block_time_secs": node.last_block_time_secs,
+                "avg_block_time_secs": (avg * 100.0).round() / 100.0,
+                "seconds_since_last_block": since_last,
+                "difficulty": (difficulty * 100.0).round() / 100.0,
             }))
         });
 
@@ -91,58 +118,68 @@ impl RpcServer {
 
         let send_node = node_send.clone();
         let send_tx = warp::path("transaction")
-            .and(warp::post())
-            .and(warp::body::json())
-            .and_then(move |tx_hex: String| {
-                let node = send_node.clone();
-                async move {
-                    let tx_data = match hex::decode(&tx_hex) {
-                        Ok(d) => d,
-                        Err(e) => {
-                            return Ok::<_, warp::Rejection>(warp::reply::with_status(
-                                warp::reply::json(&serde_json::json!({ "error": format!("Invalid hex: {}", e) })),
-                                warp::http::StatusCode::BAD_REQUEST,
-                            ));
-                        }
-                    };
-
-                    let mut node = node.write();
-
-                    match bincode::deserialize::<Transaction>(&tx_data) {
-                        Ok(tx) => {
-                            let txid = tx.txid(&mut node.argon2);
-                            let tx_clone = tx.clone();
-
-                            match node.add_transaction_to_mempool(tx) {
-                                Ok(()) => {
-                                    if let Some(p2p) = &mut node.p2p {
-                                        p2p.broadcast(&P2PMessage::Transaction(tx_clone));
+                .and(warp::post())
+                .and(warp::body::bytes())
+                .and_then(move |body: bytes::Bytes| {
+                    let node = send_node.clone();
+                    async move {
+                        let tx_hex = match std::str::from_utf8(&body) {
+                            Ok(s) => s.trim().to_string(),
+                            Err(e) => {
+                                return Ok::<_, warp::Rejection>(warp::reply::with_status(
+                                    warp::reply::json(&serde_json::json!({ "error": format!("Invalid UTF-8: {}", e) })),
+                                    warp::http::StatusCode::BAD_REQUEST,
+                                ));
+                            }
+                        };
+    
+                        let tx_data = match hex::decode(&tx_hex) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                return Ok::<_, warp::Rejection>(warp::reply::with_status(
+                                    warp::reply::json(&serde_json::json!({ "error": format!("Invalid hex: {}", e) })),
+                                    warp::http::StatusCode::BAD_REQUEST,
+                                ));
+                            }
+                        };
+    
+                        let mut node = node.write();
+    
+                        match bincode::deserialize::<Transaction>(&tx_data) {
+                            Ok(tx) => {
+                                let txid = tx.txid(&mut node.argon2);
+                                let tx_clone = tx.clone();
+    
+                                match node.add_transaction_to_mempool(tx) {
+                                    Ok(()) => {
+                                        if let Some(p2p) = &mut node.p2p {
+                                            p2p.broadcast(&P2PMessage::Transaction(tx_clone));
+                                        }
+                                        Ok(warp::reply::with_status(
+                                            warp::reply::json(&serde_json::json!({
+                                                "status": "ok",
+                                                "txid": hex::encode(txid),
+                                            })),
+                                            warp::http::StatusCode::OK,
+                                        ))
                                     }
-                                    Ok(warp::reply::with_status(
-                                        warp::reply::json(&serde_json::json!({
-                                            "status": "ok",
-                                            "txid": hex::encode(txid),
-                                        })),
-                                        warp::http::StatusCode::OK,
-                                    ))
-                                }
-                                Err(e) => {
-                                    Ok(warp::reply::with_status(
-                                        warp::reply::json(&serde_json::json!({ "error": e })),
-                                        warp::http::StatusCode::BAD_REQUEST,
-                                    ))
+                                    Err(e) => {
+                                        Ok(warp::reply::with_status(
+                                            warp::reply::json(&serde_json::json!({ "error": e })),
+                                            warp::http::StatusCode::BAD_REQUEST,
+                                        ))
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            Ok(warp::reply::with_status(
-                                warp::reply::json(&serde_json::json!({ "error": format!("Invalid transaction data: {}", e) })),
-                                warp::http::StatusCode::BAD_REQUEST,
-                            ))
+                            Err(e) => {
+                                Ok(warp::reply::with_status(
+                                    warp::reply::json(&serde_json::json!({ "error": format!("Invalid transaction data: {}", e) })),
+                                    warp::http::StatusCode::BAD_REQUEST,
+                                ))
+                            }
                         }
                     }
-                }
-            });
+                });
 
         let peers_node = node_peers.clone();
         let peers = warp::path("peers").and(warp::get()).map(move || {

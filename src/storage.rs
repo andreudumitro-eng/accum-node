@@ -98,8 +98,14 @@ impl ProductionStorage {
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
         let cfs = vec![
-            CF_BLOCKS, CF_UTXO, CF_MINERS, CF_BONDS, CF_STATE,
-            CF_MEMPOOL, CF_SLASHES, CF_CHECKPOINTS,
+            CF_BLOCKS,
+            CF_UTXO,
+            CF_MINERS,
+            CF_BONDS,
+            CF_STATE,
+            CF_MEMPOOL,
+            CF_SLASHES,
+            CF_CHECKPOINTS,
         ];
         let db = DB::open_cf(&opts, path.to_str().unwrap(), &cfs).map_err(|e| e.to_string())?;
 
@@ -114,7 +120,7 @@ impl ProductionStorage {
     }
 
     pub fn save_block(&self, height: Height, block: &Block) -> Result<(), String> {
-        let key = height.to_le_bytes();
+        let key = height.to_be_bytes();
         let value = bincode::serialize(block).map_err(|e| e.to_string())?;
         self.db
             .put_cf(self.cf_handle(CF_BLOCKS), key, value)
@@ -123,7 +129,7 @@ impl ProductionStorage {
     }
 
     pub fn get_block(&self, height: Height) -> Result<Option<Block>, String> {
-        let key = height.to_le_bytes();
+        let key = height.to_be_bytes();
         match self.db.get_cf(self.cf_handle(CF_BLOCKS), key) {
             Ok(Some(data)) => {
                 let block = bincode::deserialize(&data).map_err(|e| e.to_string())?;
@@ -143,7 +149,7 @@ impl ProductionStorage {
             let key_slice = key.as_ref();
             if key_slice.len() >= 8 {
                 height_bytes.copy_from_slice(&key_slice[0..8]);
-                Ok(u64::from_le_bytes(height_bytes))
+                Ok(u64::from_be_bytes(height_bytes))
             } else {
                 Ok(0)
             }
@@ -251,6 +257,18 @@ impl ProductionStorage {
         Ok(())
     }
 
+    pub fn delete_miner(&self, miner_id: &MinerId) -> Result<(), String> {
+        self.db
+            .delete_cf(self.cf_handle(CF_MINERS), miner_id)
+            .map_err(|e| format!("Failed to delete miner: {}", e))
+    }
+
+    pub fn delete_state(&self, key: &str) -> Result<(), String> {
+        self.db
+            .delete_cf(self.cf_handle(CF_STATE), key.as_bytes())
+            .map_err(|e| format!("Failed to delete state: {}", e))
+    }
+
     pub fn get_miner(&self, miner_id: &MinerId) -> Result<Option<MinerData>, String> {
         match self.db.get_cf(self.cf_handle(CF_MINERS), miner_id) {
             Ok(Some(data)) => {
@@ -289,7 +307,7 @@ impl ProductionStorage {
     }
 
     pub fn save_slash_record(&self, height: Height, record: &SlashRecord) -> Result<(), String> {
-        let key = height.to_le_bytes();
+        let key = height.to_be_bytes();
         let value = bincode::serialize(record).map_err(|e| e.to_string())?;
         self.db
             .put_cf(self.cf_handle(CF_SLASHES), key, value)
@@ -298,7 +316,7 @@ impl ProductionStorage {
     }
 
     pub fn save_checkpoint(&self, height: Height, checkpoint: &Checkpoint) -> Result<(), String> {
-        let key = height.to_le_bytes();
+        let key = height.to_be_bytes();
         let value = bincode::serialize(checkpoint).map_err(|e| e.to_string())?;
         self.db
             .put_cf(self.cf_handle(CF_CHECKPOINTS), key, value)
@@ -307,7 +325,7 @@ impl ProductionStorage {
     }
 
     pub fn get_checkpoint(&self, height: Height) -> Result<Option<Checkpoint>, String> {
-        let key = height.to_le_bytes();
+        let key = height.to_be_bytes();
         match self.db.get_cf(self.cf_handle(CF_CHECKPOINTS), key) {
             Ok(Some(data)) => {
                 let checkpoint = bincode::deserialize(&data).map_err(|e| e.to_string())?;
@@ -327,7 +345,7 @@ impl ProductionStorage {
             let key_slice = key.as_ref();
             if key_slice.len() >= 8 {
                 height_bytes.copy_from_slice(&key_slice[0..8]);
-                let height = u64::from_le_bytes(height_bytes);
+                let height = u64::from_be_bytes(height_bytes);
                 let checkpoint = bincode::deserialize(&value).map_err(|e| e.to_string())?;
                 Ok(Some((height, checkpoint)))
             } else {
@@ -346,7 +364,10 @@ impl ProductionStorage {
         Ok(())
     }
 
-    pub fn get_state<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>, String> {
+    pub fn get_state<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>, String> {
         match self.db.get_cf(self.cf_handle(CF_STATE), key.as_bytes()) {
             Ok(Some(data)) => {
                 let value = bincode::deserialize(&data).map_err(|e| e.to_string())?;
@@ -489,7 +510,10 @@ impl ProductionStorage {
             std::fs::remove_dir_all(&new_db_path).map_err(|e| e.to_string())?;
         }
 
-        println!("✅ Database restored from backup: {}", backup_path.display());
+        println!(
+            "✅ Database restored from backup: {}",
+            backup_path.display()
+        );
         println!("⚠️ Please restart the node for changes to take effect");
 
         Ok(())
@@ -501,8 +525,14 @@ impl ProductionStorage {
             .ok_or(format!("Checkpoint at height {} not found", height))?;
 
         println!("🔄 Restoring from checkpoint at height {}", height);
-        println!("   Block hash: {}", hex::encode(&checkpoint.block_hash[0..8]));
-        println!("   State root: {}", hex::encode(&checkpoint.state_root[0..8]));
+        println!(
+            "   Block hash: {}",
+            hex::encode(&checkpoint.block_hash[0..8])
+        );
+        println!(
+            "   State root: {}",
+            hex::encode(&checkpoint.state_root[0..8])
+        );
 
         self.backup()?;
 

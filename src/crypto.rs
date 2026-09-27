@@ -7,7 +7,6 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-
 pub struct Argon2Cache {
     argon2: Argon2<'static>,
     cache: HashMap<Vec<u8>, (Hash32, u64)>,
@@ -105,4 +104,9 @@ impl Argon2Cache {
         };
         (self.hits, self.misses, avg_time)
     }
+}
+
+pub fn argon2id_hash(data: &[u8]) -> Hash32 {
+    let mut cache = Argon2Cache::new(1);
+    cache.hash(data)
 }

@@ -7,20 +7,18 @@ use crate::crypto::Argon2Cache;
 use crate::miner::Share;
 use crate::network::DDoSProtection;
 use crate::storage::{Checkpoint, ProductionStorage};
+use crate::node::Node;
 use crate::types::{current_timestamp, Hash32, Height, MinerId, OutPoint, PeerId, Timestamp};
 use crate::wallet::Wallet;
-use crate::node::Node;
-use parking_lot::RwLock;
 use rand::{thread_rng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
 
 /// Проверка coinbase: сумма выходов coinbase ≤ block_reward + сумма fees.
-fn validate_block_coinbase(block: &Block, storage: &ProductionStorage) -> Result<(), String> {
+pub fn validate_block_coinbase(block: &Block, storage: &ProductionStorage) -> Result<(), String> {
     if block.transactions.is_empty() {
         return Err("Empty block".to_string());
     }
@@ -61,10 +59,7 @@ pub fn validate_block_no_double_spend(block: &Block) -> Result<(), String> {
         for input in &tx.inputs {
             let outpoint = input.outpoint();
             if seen.contains(&outpoint) {
-                return Err(format!(
-                    "Double spend detected: {:?}",
-                    outpoint
-                ));
+                return Err(format!("Double spend detected: {:?}", outpoint));
             }
             seen.insert(outpoint);
         }
@@ -183,7 +178,7 @@ impl PeerConnection {
     }
 
     pub fn check_rate_limit(&mut self, current_time: Timestamp) -> bool {
-        if current_time - self.last_hour_reset > 3600 {
+        if current_time.saturating_sub(self.last_hour_reset) > 3600 {
             self.messages_this_hour = 0;
             self.last_hour_reset = current_time;
         }
@@ -209,16 +204,19 @@ impl PeerConnection {
     }
 
     pub fn is_stale(&self, current_time: Timestamp) -> bool {
-        current_time - self.last_message_time > PEER_TIMEOUT_SECS
+        current_time.saturating_sub(self.last_message_time) > PEER_TIMEOUT_SECS
     }
 
     pub fn needs_heartbeat(&self, current_time: Timestamp) -> bool {
-        current_time - self.last_heartbeat > 30
+        current_time.saturating_sub(self.last_heartbeat) > 30
     }
 
     pub fn send_message(&mut self, msg: &P2PMessage) -> Result<(), std::io::Error> {
+        // NOTE: не блокируем отправку BanPeer — иначе бан не дойдёт до пира.
         if self.banned {
-            return Ok(());
+            if !matches!(msg, P2PMessage::BanPeer { .. }) {
+                return Ok(());
+            }
         }
 
         let data = bincode::serialize(msg)
@@ -275,9 +273,9 @@ impl PeerConnection {
                 self.last_message_time = now;
 
                 match &msg {
-                    P2PMessage::Heartbeat(nonce) => {
+                    P2PMessage::Heartbeat(_nonce) => {
                         self.last_heartbeat = now;
-                        let _ = self.send_message(&P2PMessage::Pong(*nonce));
+                        // Pong отправляется в Node::handle_p2p_message.
                     }
                     P2PMessage::Pong(nonce) => {
                         if let Some(ping_nonce) = self.ping_nonce {
@@ -291,12 +289,14 @@ impl PeerConnection {
                         height,
                         best_hash,
                         version,
+                        peer_id,
                         ..
                     } => {
+                        self.peer_id = *peer_id;
                         self.height = Some(*height);
                         self.best_hash = Some(*best_hash);
                         self.version = Some(*version);
-
+                    
                         if let Err(e) = self.check_version() {
                             self.ban(e);
                             return Ok(None);
@@ -332,13 +332,14 @@ impl PeerConnection {
     pub fn update_state(&mut self, height: Height, hash: Hash32) {
         self.height = Some(height);
         self.best_hash = Some(hash);
-        self.last_message_time = current_timestamp();
     }
 
+    /// Баним пира и шлём BanPeer до установки флага, чтобы send_message не заблокировал отправку.
     pub fn ban(&mut self, reason: &str) {
         if self.banned {
             return;
         }
+
         self.banned = true;
         self.ban_reason = Some(reason.to_string());
         println!("🚫 Peer {} banned: {}", self.address, reason);
@@ -389,18 +390,20 @@ pub struct P2PNode {
     pub sync_manager: SyncManager,
     pub local_height: Height,
     pub local_best_hash: Hash32,
+    pub local_peer_id: PeerId,
     pub bootnodes: Vec<String>,
-    pub node: Arc<RwLock<Node>>,
 }
 
 impl P2PNode {
     pub fn new(
         port: u16,
         bootnodes: Vec<String>,
-        node: Arc<RwLock<Node>>,
     ) -> Result<Self, std::io::Error> {
         let listener = TcpListener::bind(format!("0.0.0.0:{}", port))?;
         listener.set_nonblocking(true)?;
+
+        let mut local_peer_id = [0u8; 32];
+        thread_rng().fill_bytes(&mut local_peer_id);
 
         Ok(Self {
             peers: HashMap::new(),
@@ -412,15 +415,17 @@ impl P2PNode {
             sync_manager: SyncManager::new(),
             local_height: 0,
             local_best_hash: [0; 32],
+            local_peer_id,
             bootnodes,
-            node,
         })
     }
 
     pub fn set_local_state(&mut self, height: Height, best_hash: Hash32) {
         self.local_height = height;
         self.local_best_hash = best_hash;
-        self.sync_manager.set_chain(Vec::new(), HashMap::new());
+        self.sync_manager.local_height = height;
+        self.sync_manager.local_chain.clear();
+        self.sync_manager.local_hashes.clear();
         self.broadcast_version();
     }
 
@@ -431,7 +436,7 @@ impl P2PNode {
                 timestamp: current_timestamp(),
                 height: self.local_height,
                 best_hash: self.local_best_hash,
-                peer_id: peer.get_peer_id(),
+                peer_id: self.local_peer_id,
             };
             let _ = peer.send_message(&msg);
         }
@@ -460,7 +465,7 @@ impl P2PNode {
                     timestamp: current_timestamp(),
                     height: self.local_height,
                     best_hash: self.local_best_hash,
-                    peer_id: peer.get_peer_id(),
+                    peer_id: self.local_peer_id,
                 };
                 let _ = peer.send_message(&version_msg);
 
@@ -474,10 +479,13 @@ impl P2PNode {
         Ok(())
     }
 
-    pub fn process_messages(&mut self) -> Result<(), std::io::Error> {
+    /// Reads messages from all peers and returns them to the caller.
+    /// Does NOT handle messages itself — handling happens in
+    /// Node::tick under the write-lock.
+    pub fn process_messages(&mut self) -> Result<Vec<(P2PMessage, SocketAddr)>, std::io::Error> {
         let now = current_timestamp();
         let mut disconnected = Vec::new();
-        let mut messages_to_handle = Vec::new();
+        let mut messages_to_return = Vec::new();
 
         for (addr, peer) in self.peers.iter_mut() {
             if peer.is_banned() || peer.is_stale(now) {
@@ -497,7 +505,7 @@ impl P2PNode {
                             disconnected.push(*addr);
                             break;
                         }
-                        messages_to_handle.push((msg, *addr));
+                        messages_to_return.push((msg, *addr));
                     }
                     Ok(None) => break,
                     Err(e) => {
@@ -512,10 +520,6 @@ impl P2PNode {
             }
         }
 
-        for (msg, addr) in messages_to_handle {
-            self.handle_message(msg, addr);
-        }
-
         for addr in disconnected {
             if let Some(peer) = self.peers.remove(&addr) {
                 self.sync_manager.remove_peer(&peer.get_peer_id());
@@ -523,294 +527,7 @@ impl P2PNode {
             }
         }
 
-        Ok(())
-    }
-
-    pub fn handle_message(&mut self, msg: P2PMessage, addr: SocketAddr) {
-        let peers_for_response = match &msg {
-            P2PMessage::GetPeers => Some(self.peers.keys().copied().collect()),
-            _ => None,
-        };
-
-        let peer = match self.peers.get_mut(&addr) {
-            Some(p) => p,
-            None => return,
-        };
-
-        match msg {
-            P2PMessage::Version {
-                version: _,
-                timestamp,
-                height,
-                best_hash,
-                peer_id,
-            } => {
-                let latency = (current_timestamp() - timestamp) as u64;
-                self.sync_manager
-                    .update_peer(peer_id, addr, height, best_hash, latency);
-                peer.update_state(height, best_hash);
-                let _ = peer.send_message(&P2PMessage::Verack);
-            }
-            P2PMessage::Verack => {}
-            P2PMessage::Ping(nonce) => {
-                let _ = peer.send_message(&P2PMessage::Pong(nonce));
-            }
-            P2PMessage::Pong(_) => {}
-            P2PMessage::GetBlocks {
-                from_height,
-                max_count,
-            } => {
-                let mut node = self.node.write();
-                let mut blocks = Vec::new();
-                let end = from_height.saturating_add(max_count as u64);
-                for h in from_height..end {
-                    if let Ok(Some(block)) = node.storage.get_block(h) {
-                        blocks.push(block);
-                    } else {
-                        break;
-                    }
-                }
-                if !blocks.is_empty() {
-                    let _ = peer.send_message(&P2PMessage::Blocks(blocks));
-                }
-            }
-            P2PMessage::Blocks(blocks) => {
-                let peer_id = peer.get_peer_id();
-
-                let verification_result = {
-                    let mut node = self.node.write();
-                    self.sync_manager
-                        .verify_and_accept_blocks(&blocks, &mut node)
-                };
-
-                match verification_result {
-                    Ok(new_height) => {
-                        let mut node = self.node.write();
-                        node.height = new_height;
-                        self.local_height = new_height;
-                        if let Some(last) = blocks.last() {
-                            self.local_best_hash = last.header.hash(&mut node.argon2);
-                        }
-
-                        let _ = self.sync_manager.on_blocks_received(&blocks, &peer_id);
-
-                        println!(
-                            "✅ Synced and stored {} blocks, new height: {}",
-                            blocks.len(),
-                            new_height
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("❌ Failed to verify and store blocks: {}", e);
-                        peer.ban(&format!("Invalid blocks: {}", e));
-                    }
-                }
-            }
-            P2PMessage::Share(share) => {
-                let accepted = {
-                    let mut node = self.node.write();
-                    node.add_share(share.clone())
-                };
-
-                if accepted {
-                    let msg = P2PMessage::Share(share);
-                    for (peer_addr, peer) in self.peers.iter_mut() {
-                        if *peer_addr != addr && !peer.is_banned() {
-                            let _ = peer.send_message(&msg);
-                        }
-                    }
-                }
-            }
-            P2PMessage::Block {
-                header,
-                transactions,
-                signature,
-                pubkey,
-            } => {
-                let mut node = self.node.write();
-
-                let expected_height = node.height + 1;
-                let prev_hash = node.last_hash();
-
-                if header.prev_hash != prev_hash {
-                    return;
-                }
-
-                let hash = header.hash(&mut node.argon2);
-                if !header.difficulty.is_met_by(&hash) {
-                    println!("⚠️ Received invalid block (PoW failed)");
-                    return;
-                }
-                
-                if let Some(cp) = node.checkpoint_at(expected_height) {
-                    if hash != cp.block_hash {
-                        println!(
-                            "⚠️ Block hash conflicts with checkpoint at height {}",
-                            expected_height
-                        );
-                        return;
-                    }
-                }
-                                // Long-range protection
-                                if let Some(cp) = node.checkpoint_at(expected_height) {
-                                    if hash != cp.block_hash {
-                                        println!(
-                                            "⚠️ Block hash conflicts with checkpoint at height {}",
-                                            expected_height
-                                        );
-                                        return;
-                                    }
-                                }                
-
-                // Проверка подписи (если она есть — обязательна)
-                if let (Some(sig), Some(pk)) = (&signature, &pubkey) {
-                    if !Wallet::verify_signature(pk, sig, &hash) {
-                        println!("⚠️ Received block with invalid signature");
-                        return;
-                    }
-                } else {
-                    println!("⚠️ Received block without signature");
-                    return;
-                }
-                
-                                // Проверка timestamp с median
-                                let prev_timestamp = if node.height > 0 {
-                                    node.blocks.last().map(|b| b.timestamp)
-                                } else {
-                                    None
-                                };
-                                let median = node.median_timestamp();
-                                if !header.validate_timestamp(prev_timestamp, median) {
-                                    println!("⚠️ Received block with invalid timestamp");
-                                    return;
-                                }
-                
-
-                                // Проверка merkle root
-                                let computed_root =
-                                SyncManager::compute_merkle_root(&transactions, &mut node.argon2);
-                            if header.merkle_root != computed_root {
-                                println!("⚠️ Received block with invalid merkle root");
-                                return;
-                            }
-            
-                            let block = Block {
-                                header: header.clone(),
-                                transactions: transactions.clone(),
-                                signature,
-                                pubkey,
-                            };
-            
-                            // Проверка coinbase ≤ reward + fees
-                            if let Err(e) = validate_block_coinbase(&block, &node.storage) {
-                                println!("⚠️ Received block with invalid coinbase: {}", e);
-                                return;
-                            }
-
-                            // Проверка double-spend
-                if let Err(e) = validate_block_no_double_spend(&block) {
-                    println!("⚠️ Received block with double spend: {}", e);
-                    return;
-                }
-
-                let new_height = expected_height;
-                if let Err(e) = node.storage.save_block(new_height, &block) {
-                    println!("❌ Failed to save received block: {}", e);
-                    return;
-                }
-
-                node.blocks.push(header.clone());
-                node.block_hashes.insert(hash, new_height);
-                node.timestamps.push(header.timestamp);
-                node.height = new_height;
-
-                node.update_utxo_set(&block);
-
-                let mut txids_in_block = HashSet::new();
-                for tx in &block.transactions {
-                    if !tx.is_coinbase() {
-                        let txid = tx.txid(&mut node.argon2);
-                        txids_in_block.insert(txid);
-                        node.processed_txids.insert(txid);
-                    }
-                }
-
-                node.mempool.retain(|tx| {
-                    let mut argon2 = Argon2Cache::new(10);
-                    let txid = tx.txid(&mut argon2);
-                    !txids_in_block.contains(&txid)
-                });
-
-                let _ = node.storage.save_state("height", &node.height);
-                let _ = node.storage.save_mempool(&node.mempool);
-
-                self.local_height = new_height;
-                self.local_best_hash = hash;
-
-                println!("📥 Received and accepted block #{}", new_height);
-
-                let msg = P2PMessage::Block {
-                    header: header.clone(),
-                    transactions: block.transactions.clone(),
-                    signature: block.signature.clone(),
-                    pubkey: block.pubkey.clone(),
-                };
-
-                for (peer_addr, peer) in self.peers.iter_mut() {
-                    if *peer_addr != addr && !peer.is_banned() {
-                        let _ = peer.send_message(&msg);
-                    }
-                }
-            }
-            P2PMessage::EpochCommit { .. } => {}
-            P2PMessage::GetMempool => {}
-            P2PMessage::Mempool(_txs) => {}
-            P2PMessage::Transaction(tx) => {
-                let accepted = {
-                    let mut node = self.node.write();
-                    match node.add_transaction_to_mempool(tx.clone()) {
-                        Ok(()) => true,
-                        Err(_) => false,
-                    }
-                };
-
-                if accepted {
-                    let msg = P2PMessage::Transaction(tx);
-                    for (peer_addr, peer) in self.peers.iter_mut() {
-                        if *peer_addr != addr && !peer.is_banned() {
-                            let _ = peer.send_message(&msg);
-                        }
-                    }
-                }
-            }
-            P2PMessage::GetPeers => {
-                if let Some(peers) = peers_for_response {
-                    let _ = peer.send_message(&P2PMessage::Peers(peers));
-                }
-            }
-            P2PMessage::Peers(peers) => {
-                for p in peers {
-                    if !self.known_peers.contains(&p) && !self.peers.contains_key(&p) {
-                        self.known_peers.insert(p);
-                        if self.peers.len() < MAX_PEERS {
-                            let _ = self.connect_to(p);
-                        }
-                    }
-                }
-            }
-            P2PMessage::BanPeer { peer_id, reason } => {
-                if peer_id == peer.get_peer_id() {
-                    peer.ban(&reason);
-                }
-            }
-            P2PMessage::SlashProof { .. } => {}
-            P2PMessage::Checkpoint(_) => {}
-            P2PMessage::SyncRequest { .. } => {}
-            P2PMessage::SyncResponse(_blocks) => {}
-            P2PMessage::Heartbeat(nonce) => {
-                let _ = peer.send_message(&P2PMessage::Pong(nonce));
-            }
-        }
+        Ok(messages_to_return)
     }
 
     pub fn broadcast(&mut self, msg: &P2PMessage) {
@@ -842,7 +559,7 @@ impl P2PNode {
             timestamp: current_timestamp(),
             height: self.local_height,
             best_hash: self.local_best_hash,
-            peer_id: peer.get_peer_id(),
+            peer_id: self.local_peer_id,
         };
 
         let _ = peer.send_message(&version_msg);
@@ -855,9 +572,17 @@ impl P2PNode {
 
     pub fn connect_to_bootnodes(&mut self) {
         let bootnodes = self.bootnodes.clone();
-        for bootnode in bootnodes {
-            if let Ok(addr) = bootnode.parse() {
-                let _ = self.connect_to(addr);
+        if bootnodes.is_empty() {
+            println!("⚠️ No bootnodes configured");
+            return;
+        }
+        for bootnode in &bootnodes {
+            match bootnode.parse::<SocketAddr>() {
+                Ok(addr) => match self.connect_to(addr) {
+                    Ok(_) => println!("✅ Connected to bootnode {}", addr),
+                    Err(e) => println!("❌ Failed to connect to bootnode {}: {}", addr, e),
+                },
+                Err(e) => println!("❌ Invalid bootnode address '{}': {}", bootnode, e),
             }
         }
     }
@@ -927,16 +652,18 @@ pub enum SyncStatus {
 pub struct SyncManager {
     pub peers: HashMap<PeerId, SyncPeer>,
     pub active_session: Option<SyncSession>,
+    /// DEPRECATED: source of truth is Node::blocks. Kept for compatibility.
     pub local_chain: Vec<BlockHeader>,
+    /// DEPRECATED: source of truth is Node::block_hashes. Kept for compatibility.
     pub local_hashes: HashMap<Hash32, Height>,
+    /// Local chain height — updated from Node::height.
+    pub local_height: Height,
     pub sync_in_progress: bool,
     pub last_sync_attempt: Timestamp,
     pub pending_blocks: Vec<Block>,
     pub last_request_time: Timestamp,
     pub retry_count: HashMap<PeerId, u32>,
     pub sync_complete_height: Height,
-    pub send_message_callback:
-        Option<Box<dyn FnMut(&PeerId, P2PMessage) -> Result<(), String> + Send + Sync>>,
 }
 
 impl SyncManager {
@@ -946,13 +673,13 @@ impl SyncManager {
             active_session: None,
             local_chain: Vec::new(),
             local_hashes: HashMap::new(),
+            local_height: 0,
             sync_in_progress: false,
             last_sync_attempt: 0,
             pending_blocks: Vec::new(),
             last_request_time: 0,
             retry_count: HashMap::new(),
             sync_complete_height: 0,
-            send_message_callback: None,
         }
     }
 
@@ -996,7 +723,7 @@ impl SyncManager {
     }
 
     pub fn best_peer(&self) -> Option<SyncPeer> {
-        let current_height = self.local_chain.len() as Height;
+        let current_height = self.current_height();
 
         self.peers
             .values()
@@ -1010,7 +737,7 @@ impl SyncManager {
     }
 
     pub fn needs_sync(&self) -> bool {
-        let current_height = self.local_chain.len() as Height;
+        let current_height = self.current_height();
         let best_peer_height = self
             .peers
             .values()
@@ -1020,7 +747,7 @@ impl SyncManager {
             .unwrap_or(current_height);
 
         let now = current_timestamp();
-        let sync_timeout = now - self.last_sync_attempt > SYNC_TIMEOUT_SECS;
+        let sync_timeout = now.saturating_sub(self.last_sync_attempt) > SYNC_TIMEOUT_SECS;
 
         best_peer_height > current_height && (self.active_session.is_none() || sync_timeout)
     }
@@ -1030,7 +757,7 @@ impl SyncManager {
             return false;
         }
 
-        let current_height = self.local_chain.len() as Height;
+        let current_height = self.current_height();
 
         if peer.height <= current_height {
             return false;
@@ -1058,7 +785,11 @@ impl SyncManager {
         true
     }
 
-    pub fn on_blocks_received(&mut self, blocks: &[Block], peer_id: &PeerId) -> Result<Height, String> {
+    pub fn on_blocks_received(
+        &mut self,
+        blocks: &[Block],
+        peer_id: &PeerId,
+    ) -> Result<Height, String> {
         if let Some(session) = self.active_session.as_mut() {
             if session.peer_id != *peer_id {
                 return Err("Wrong peer".to_string());
@@ -1074,13 +805,10 @@ impl SyncManager {
             session.last_activity = current_timestamp();
             session.status = SyncStatus::Receiving;
 
-            for block in blocks {
-                session.current_height += 1;
-                self.local_chain.push(block.header.clone());
-                let mut argon2 = Argon2Cache::new(100);
-                self.local_hashes
-                    .insert(block.header.hash(&mut argon2), session.current_height);
-            }
+            session.current_height = session
+                .current_height
+                .saturating_add(blocks.len() as u64)
+                .min(session.target_height);
 
             if session.current_height >= session.target_height {
                 session.status = SyncStatus::Completed;
@@ -1088,6 +816,11 @@ impl SyncManager {
                 println!("✅ Sync completed! Height: {}", session.current_height);
             } else {
                 session.status = SyncStatus::Requesting;
+            }
+
+            // Успешный приём блоков — сбрасываем счётчик retries.
+            if let Some(peer) = self.peers.get_mut(peer_id) {
+                peer.retries = 0;
             }
 
             return Ok(session.current_height);
@@ -1100,7 +833,7 @@ impl SyncManager {
         let now = current_timestamp();
 
         if let Some(session) = self.active_session.as_mut() {
-            if now - session.last_activity > SYNC_TIMEOUT_SECS {
+            if now.saturating_sub(session.last_activity) > SYNC_TIMEOUT_SECS {
                 println!("⚠️ Sync timeout with peer");
                 session.status = SyncStatus::Failed("Timeout".to_string());
 
@@ -1130,8 +863,8 @@ impl SyncManager {
 
     pub fn sync_progress(&self) -> f64 {
         if let Some(session) = self.active_session.as_ref() {
-            let total = session.target_height - session.from_height;
-            let current = session.current_height - session.from_height;
+            let total = session.target_height.saturating_sub(session.from_height);
+            let current = session.current_height.saturating_sub(session.from_height);
             if total > 0 {
                 return current as f64 / total as f64;
             }
@@ -1151,7 +884,7 @@ impl SyncManager {
     }
 
     pub fn current_height(&self) -> Height {
-        self.local_chain.len() as Height
+        self.local_height
     }
 
     pub fn request_blocks(
@@ -1159,39 +892,38 @@ impl SyncManager {
         peer_id: &PeerId,
         from: Height,
         to: Height,
-    ) -> Result<(), String> {
-        if let Some(peer) = self.peers.get_mut(peer_id) {
-            if peer.banned {
-                return Err("Peer is banned".to_string());
-            }
+    ) -> Result<P2PMessage, String> {
+        let peer = self
+            .peers
+            .get(peer_id)
+            .ok_or_else(|| "Peer not found".to_string())?;
 
-            let max_count = (to - from).min(MAX_BLOCKS_PER_REQUEST as u64) as u32;
-
-            if let Some(callback) = &mut self.send_message_callback {
-                let msg = P2PMessage::GetBlocks {
-                    from_height: from,
-                    max_count: max_count,
-                };
-                callback(peer_id, msg)?;
-            }
-
-            println!(
-                "📤 Requested blocks {}..{} from peer {}",
-                from,
-                from + max_count as u64,
-                peer.address
-            );
-            Ok(())
-        } else {
-            Err("Peer not found".to_string())
+        if peer.banned {
+            return Err("Peer is banned".to_string());
         }
+
+        let max_count = to
+            .saturating_sub(from)
+            .min(MAX_BLOCKS_PER_REQUEST as u64) as u32;
+
+        println!(
+            "📤 Requested blocks {}..{} from peer {}",
+            from,
+            from + max_count as u64,
+            peer.address
+        );
+
+        Ok(P2PMessage::GetBlocks {
+            from_height: from,
+            max_count,
+        })
     }
 
     pub fn request_blocks_from_peer(
         &mut self,
         peer_id: &PeerId,
         from_height: Height,
-    ) -> Result<(), String> {
+    ) -> Result<P2PMessage, String> {
         let peer = self
             .peers
             .get(peer_id)
@@ -1202,13 +934,16 @@ impl SyncManager {
         }
 
         let now = current_timestamp();
-        if now - self.last_request_time < 5 && self.sync_in_progress {
+        if now.saturating_sub(self.last_request_time) < 5 && self.sync_in_progress {
             return Err("Too frequent requests".to_string());
         }
 
         let max_height = peer.height;
         let to_height = (from_height + SYNC_BATCH_SIZE - 1).min(max_height);
-        let count = (to_height - from_height + 1) as u32;
+        let count = to_height
+            .saturating_sub(from_height)
+            .saturating_add(1)
+            .min(MAX_BLOCKS_PER_REQUEST as u64) as u32;
 
         if count == 0 {
             return Err("No blocks to request".to_string());
@@ -1219,52 +954,44 @@ impl SyncManager {
             return Err("Peer has too many retries".to_string());
         }
 
-        if let Some(callback) = &mut self.send_message_callback {
-            let msg = P2PMessage::GetBlocks {
-                from_height,
-                max_count: count,
-            };
-
-            callback(peer_id, msg)?;
-
-            if let Some(session) = self.active_session.as_mut() {
-                session.status = SyncStatus::Receiving;
-                session.last_activity = now;
-            }
-
-            self.last_request_time = now;
-            self.last_sync_attempt = now;
-
-            println!(
-                "📤 Requested {} blocks from height {} from peer {}",
-                count, from_height, peer.address
-            );
-
-            Ok(())
-        } else {
-            Err("No send callback configured".to_string())
+        if let Some(session) = self.active_session.as_mut() {
+            session.status = SyncStatus::Receiving;
+            session.last_activity = now;
         }
+
+        self.last_request_time = now;
+        self.last_sync_attempt = now;
+
+        println!(
+            "📤 Requested {} blocks from height {} from peer {}",
+            count, from_height, peer.address
+        );
+
+        Ok(P2PMessage::GetBlocks {
+            from_height,
+            max_count: count,
+        })
     }
 
+    /// Проверяет и принимает блоки, полностью обновляя состояние Node.
+    /// Источник истины о высоте — `node.height`, а не `self.local_chain`.
     pub fn verify_and_accept_blocks(
         &mut self,
         blocks: &[Block],
         node: &mut Node,
     ) -> Result<Height, String> {
-        let mut new_height = self.current_height();
+        let mut new_height = node.height;
 
         for (idx, block) in blocks.iter().enumerate() {
             let expected_height = new_height + 1;
 
-            let expected_prev = if expected_height == 1 {
-                [0; 32]
-            } else {
-                let prev_block = node
-                    .storage
-                    .get_block(expected_height - 1)?
-                    .ok_or("Previous block not found")?;
-                prev_block.header.hash(&mut node.argon2)
-            };
+            // Предыдущий блок — всегда существует (genesis есть в storage).
+            let prev_block = node
+                .storage
+                .get_block(expected_height.saturating_sub(1))?
+                .ok_or("Previous block not found")?;
+
+            let expected_prev = prev_block.header.hash(&mut node.argon2);
 
             if block.header.prev_hash != expected_prev {
                 return Err(format!("Invalid prev_hash at height {}", expected_height));
@@ -1287,16 +1014,7 @@ impl SyncManager {
                 }
             }
 
-            let prev_timestamp = if expected_height > 1 {
-                let prev_block = node
-                    .storage
-                    .get_block(expected_height - 1)?
-                    .ok_or("Previous block not found")?;
-                Some(prev_block.header.timestamp)
-            } else {
-                None
-            };
-
+            let prev_timestamp = Some(prev_block.header.timestamp);
             let median = node.median_timestamp();
 
             if !block.header.validate_timestamp(prev_timestamp, median) {
@@ -1329,14 +1047,48 @@ impl SyncManager {
             }
 
             node.storage.save_block(expected_height, block)?;
-            Self::update_utxo_set(&node.storage, block, &mut node.argon2)?;
+            node.update_utxo_set(block);
 
-            // Обновляем состояние ноды — критично для median timestamp
-            // и для корректного last_hash() после sync.
             node.blocks.push(block.header.clone());
             node.block_hashes.insert(block_hash, expected_height);
             node.timestamps.push(block.header.timestamp);
+            node.height = expected_height;
+            node.cached_difficulty = None;
 
+            node.storage
+                .save_state("height", &expected_height)
+                .map_err(|e| format!("save height: {}", e))?;
+
+            // Epoch transition.
+            if expected_height % EPOCH_BLOCKS == 0 {
+                if let Err(e) = node.process_epoch_end() {
+                    println!(
+                        "⚠️ Epoch processing failed at height {}: {}",
+                        expected_height, e
+                    );
+                }
+            }
+
+            // Epoch сохраняем после process_epoch_end — epoch мог измениться.
+            node.storage
+                .save_state("epoch", &node.epoch)
+                .map_err(|e| format!("save epoch: {}", e))?;
+
+            // Обновляем processed_txids и mempool.
+            let mut txids_in_block = HashSet::new();
+            for tx in &block.transactions {
+                if !tx.is_coinbase() {
+                    let txid = tx.txid(&mut node.argon2);
+                    txids_in_block.insert(txid);
+                    node.processed_txids.insert(txid, expected_height);
+                }
+            }
+            node.mempool.retain(|tx| {
+                let txid = tx.txid(&mut node.argon2);
+                !txids_in_block.contains(&txid)
+            });
+
+            // Поддерживаем зеркала в SyncManager.
             self.local_chain.push(block.header.clone());
             self.local_hashes.insert(block_hash, expected_height);
 
@@ -1350,6 +1102,10 @@ impl SyncManager {
                 );
             }
         }
+
+        node.storage
+            .save_mempool(&node.mempool)
+            .map_err(|e| format!("save mempool: {}", e))?;
 
         Ok(new_height)
     }
@@ -1379,28 +1135,6 @@ impl SyncManager {
             hashes = next;
         }
         hashes[0]
-    }
-
-    pub fn update_utxo_set(
-        storage: &ProductionStorage,
-        block: &Block,
-        argon2: &mut Argon2Cache,
-    ) -> Result<(), String> {
-        for tx in &block.transactions {
-            let txid = tx.txid(argon2);
-
-            for (i, output) in tx.outputs.iter().enumerate() {
-                let outpoint = (txid, i as u32);
-                storage.save_utxo(&outpoint, output)?;
-            }
-
-            for input in &tx.inputs {
-                if !input.is_coinbase() {
-                    storage.delete_utxo(&input.outpoint())?;
-                }
-            }
-        }
-        Ok(())
     }
 
     pub fn select_best_peer(&self) -> Option<(PeerId, Height, u64)> {
@@ -1458,10 +1192,8 @@ impl SyncManager {
                 from, to, peer_id
             );
 
-            if let Some(_peer) = self.peers.get_mut(&peer_id) {
-                let max_count = (to - from + 1) as u32;
-                println!("   Would request {} blocks from peer", max_count);
-            }
+            let _max_count = (to - from + 1) as u32;
+            println!("   Would request {} blocks from peer", _max_count);
 
             return Ok(true);
         }

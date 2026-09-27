@@ -88,8 +88,7 @@ impl Wallet {
             Err(_) => return false,
         };
 
-        let msg_hash = Sha256::digest(message);
-        let msg = match Message::from_digest_slice(&msg_hash) {
+        let msg = match Message::from_digest_slice(message) {
             Ok(m) => m,
             Err(_) => return false,
         };

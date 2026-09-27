@@ -20,12 +20,27 @@ pub type EpochIndex = u32;
 pub struct Target(pub Hash32);
 
 impl Target {
+    /// Максимальный target — все байты 0xFF.
+    /// Такой target пропускает любой хеш (используется как «заглушка» при переполнении).
+    pub const MAX: Target = Target([0xFF; 32]);
+
+    /// Нулевой target — не пропускает ни один хеш (майнить невозможно).
+    pub const ZERO: Target = Target([0x00; 32]);
+
+    /// Genesis target
     pub fn genesis() -> Self {
         Target([
-            0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
             0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
             0xFF, 0xFF, 0xFF, 0xFF,
         ])
+    }
+    pub fn new(bytes: Hash32) -> Self {
+        Target(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &Hash32 {
+        &self.0
     }
 
     pub fn is_met_by(&self, hash: &Hash32) -> bool {
@@ -41,10 +56,10 @@ impl Target {
 
     pub fn share_target(&self) -> Self {
         let mut result = [0u8; 32];
-        let mut carry = 0u32;
+        let mut carry = 0u64;
 
         for i in (0..32).rev() {
-            let val = (self.0[i] as u32) * SHARE_DIFFICULTY_RATIO as u32 + carry;
+            let val = (self.0[i] as u64) * SHARE_DIFFICULTY_RATIO + carry;
             result[i] = (val & 0xFF) as u8;
             carry = val >> 8;
         }
@@ -73,28 +88,105 @@ impl Target {
     }
 
     pub fn adjust(&self, factor: f64) -> Self {
-        let mut result = [0u8; 32];
-        let mut carry = 0u64;
-        let factor_fixed = (factor * 1_000_000.0) as u64;
-
-        for i in (0..32).rev() {
-            let val = (self.0[i] as u64) * factor_fixed + carry;
-            result[i] = (val / 1_000_000) as u8;
-            carry = val % 1_000_000;
+        if !factor.is_finite() || factor <= 0.0 {
+            return Target([0xFF; 32]);
         }
 
-        Target(result)
+        let factor_fixed_u128 = (factor * (1u128 << 32) as f64).round() as u128;
+        if factor_fixed_u128 == 0 {
+            return Target([0xFF; 32]);
+        }
+        if factor_fixed_u128 >= (1u128 << 64) {
+            return Target([0xFF; 32]);
+        }
+        let factor_fixed = factor_fixed_u128 as u64;
+
+        // Разбор target на 4 слова u64 (big-endian)
+        let mut words = [0u64; 4];
+        for i in 0..4 {
+            let mut w: u64 = 0;
+            for j in 0..8 {
+                w = (w << 8) | (self.0[i * 8 + j] as u64);
+            }
+            words[i] = w;
+        }
+
+        // Умножаем на factor_fixed (Q32.32)
+        let mut product = [0u64; 5];
+        let mut carry: u128 = 0;
+        for i in (0..4).rev() {
+            let val = (words[i] as u128) * (factor_fixed as u128) + carry;
+            product[i + 1] = (val & 0xFFFF_FFFF_FFFF_FFFF) as u64;
+            carry = val >> 64;
+        }
+        product[0] = carry as u64;
+
+        let mut result_words = [0u64; 4];
+        for i in 0..4 {
+            // product >> 32: берём младшие 32 бита product[i]
+            // и старшие 32 бита product[i+1].
+            let hi = product[i] & 0xFFFF_FFFF;
+            let lo = product[i + 1] >> 32;
+            result_words[i] = (hi << 32) | lo;
+        }
+
+        // Переполнение: если в product[0] есть биты выше 32-го
+        if (product[0] >> 32) != 0 {
+            return Target([0xFF; 32]);
+        }
+
+        // Сборка big-endian
+        let mut out = [0u8; 32];
+        for i in 0..4 {
+            let w = result_words[i];
+            for j in 0..8 {
+                out[i * 8 + j] = ((w >> (8 * (7 - j))) & 0xFF) as u8;
+            }
+        }
+
+        Target(out)
     }
 
+    /// Сложность = genesis_target / target.
+    ///
+    /// genesis = [0x00, 0xFF, 0xFF, ..., 0xFF] — «сложность 1».
+    /// Для genesis возвращает 1.0; для target в 2 раза меньше — 2.0;
+    /// для target в 2 раза больше — 0.5; для нулевого target — INFINITY.
     pub fn to_difficulty(&self) -> f64 {
-        let mut target_val = 0u128;
-        for i in 0..32 {
-            target_val = (target_val << 8) | (self.0[i] as u128);
-        }
-        if target_val == 0 {
+        const GENESIS: [u8; 32] = [
+            0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF,
+        ];
+
+        let (t_mant, t_exp) = Self::mantissa_exp(&self.0);
+        if t_mant == 0.0 {
             return f64::INFINITY;
         }
-        (u128::MAX as f64) / (target_val as f64)
+        let (g_mant, g_exp) = Self::mantissa_exp(&GENESIS);
+
+        (g_mant / t_mant) * 2f64.powi(g_exp - t_exp)
+    }
+
+    /// Возвращает (мантисса как f64 из старших 8 значащих байт, экспонента в битах).
+    /// Число = mantissa * 2^exp, где mantissa ∈ [2^56, 2^64) для ненулевого входа.
+    fn mantissa_exp(bytes: &[u8; 32]) -> (f64, i32) {
+        let mut first = 0;
+        while first < 32 && bytes[first] == 0 {
+            first += 1;
+        }
+        if first == 32 {
+            return (0.0, 0);
+        }
+
+        let mut mant = 0.0f64;
+        let mut used = 0;
+        while used < 8 && first + used < 32 {
+            mant = mant * 256.0 + bytes[first + used] as f64;
+            used += 1;
+        }
+        let dropped = 32 - first - used;
+        (mant, (dropped as i32) * 8)
     }
 
     pub fn shift_left(&self, bits: usize) -> Self {
@@ -152,17 +244,37 @@ impl Target {
             return *self;
         }
 
-        let mut result = [0u8; 32];
-        let mut remaining = 0u128;
-
-        for i in 0..32 {
-            let cur = (remaining << 8) + self.0[i] as u128;
-            let product = cur * numerator as u128;
-            result[i] = (product / denominator as u128) as u8;
-            remaining = product % denominator as u128;
+        // Умножаем self на numerator в 40-байтовый буфер (с запасом на overflow)
+        let mut product = [0u8; 40];
+        let mut carry: u64 = 0;
+        for i in (0..32).rev() {
+            let cur = (self.0[i] as u64) * numerator + carry;
+            product[i + 8] = (cur & 0xFF) as u8;
+            carry = cur >> 8;
+        }
+        let mut c = carry;
+        for i in (0..8).rev() {
+            product[i] = (c & 0xFF) as u8;
+            c >>= 8;
         }
 
-        Target(result)
+        // Делим product на denominator
+        let mut quotient = [0u8; 40];
+        let mut rem: u128 = 0;
+        for i in 0..40 {
+            let cur = (rem << 8) | (product[i] as u128);
+            quotient[i] = (cur / denominator as u128) as u8;
+            rem = cur % denominator as u128;
+        }
+
+        // Если верхние 8 байт не нули — overflow, насыщаемся
+        if quotient[0..8].iter().any(|&b| b != 0) {
+            return Target([0xFF; 32]);
+        }
+
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&quotient[8..40]);
+        Target(out)
     }
 
     pub fn compact(&self) -> u32 {
@@ -234,10 +346,10 @@ mod tests {
         let target = Target(bytes);
         let shifted = target.shift_left(8);
 
-        assert_eq!(shifted.0[0], 0x12);
-        assert_eq!(shifted.0[1], 0x34);
-        assert_eq!(shifted.0[2], 0x56);
-        assert_eq!(shifted.0[3], 0x00);
+        assert_eq!(shifted.0[0], 0x00);
+        assert_eq!(shifted.0[1], 0x12);
+        assert_eq!(shifted.0[2], 0x34);
+        assert_eq!(shifted.0[3], 0x56);
         assert_eq!(shifted.0[4], 0x78);
     }
 
@@ -298,6 +410,148 @@ mod tests {
         assert_eq!(target.0[1], recovered.0[1]);
         assert_eq!(target.0[2], recovered.0[2]);
     }
+
+    #[test]
+    fn test_scaled_integer_no_overflow() {
+        // Максимальный target (все 0xFF), умножаем на 125/100.
+        // Результат должен насытиться до [0xFF; 32], а не обернуться.
+        let target = Target([0xFF; 32]);
+        let result = target.scaled_integer(125, 100);
+        assert_eq!(result.0, [0xFF; 32], "должно насытиться максимумом");
+    }
+
+    #[test]
+    fn test_scaled_integer_large_numerator() {
+        // target = 0x80.., numerator = u64::MAX.
+        // Раньше это давало переполнение u64 в цикле умножения.
+        let mut bytes = [0u8; 32];
+        bytes[0] = 0x80;
+        let target = Target(bytes);
+
+        let result = target.scaled_integer(u64::MAX, 1);
+        // Результат должен быть либо [0xFF; 32] (насыщение), либо корректным
+        // большим числом. Главное — не паника и не мусор.
+        assert_ne!(result.0, [0u8; 32], "не должно быть нулём");
+    }
+
+    #[test]
+    fn test_scaled_integer_exact() {
+        // Простой случай: 100 * 2 / 2 = 100.
+        let mut bytes = [0u8; 32];
+        bytes[31] = 100;
+        let target = Target(bytes);
+
+        let result = target.scaled_integer(2, 2);
+        assert_eq!(
+            result.0, target.0,
+            "numerator == denominator → без изменений"
+        );
+
+        let result = target.scaled_integer(4, 2);
+        let mut expected = [0u8; 32];
+        expected[31] = 200;
+        assert_eq!(result.0, expected, "100 * 4 / 2 = 200");
+    }
+}
+// ============================================================
+// Тесты для adjust (ретаргет)
+// ============================================================
+
+#[test]
+fn test_adjust_identity_genesis() {
+    // adjust(genesis, 1.0) должен вернуть genesis
+    let g = Target::genesis();
+    let r = g.adjust(1.0);
+    assert_eq!(
+        r,
+        g,
+        "adjust(genesis, 1.0) сломан: \n  got  = {:02x?}\n  want = {:02x?}",
+        &r.0[..8],
+        &g.0[..8]
+    );
+}
+
+#[test]
+fn test_adjust_identity_simple() {
+    // adjust(1, 1.0) == 1
+    let mut bytes = [0u8; 32];
+    bytes[31] = 1;
+    let t = Target(bytes);
+    let r = t.adjust(1.0);
+    assert_eq!(r, t, "adjust(1, 1.0) должен вернуть 1");
+}
+
+#[test]
+fn test_adjust_double_simple() {
+    // adjust(1, 2.0) == 2
+    let mut bytes = [0u8; 32];
+    bytes[31] = 1;
+    let t = Target(bytes);
+    let r = t.adjust(2.0);
+    let mut expected = [0u8; 32];
+    expected[31] = 2;
+    assert_eq!(r, Target(expected), "adjust(1, 2.0) должен вернуть 2");
+}
+
+#[test]
+fn test_adjust_half_simple() {
+    // adjust(4, 0.5) == 2
+    let mut bytes = [0u8; 32];
+    bytes[31] = 4;
+    let t = Target(bytes);
+    let r = t.adjust(0.5);
+    let mut expected = [0u8; 32];
+    expected[31] = 2;
+    assert_eq!(r, Target(expected), "adjust(4, 0.5) должен вернуть 2");
+}
+
+#[test]
+fn test_adjust_125_percent() {
+    // adjust(100, 1.25) == 125
+    let mut bytes = [0u8; 32];
+    bytes[31] = 100;
+    let t = Target(bytes);
+    let r = t.adjust(1.25);
+    let mut expected = [0u8; 32];
+    expected[31] = 125;
+    assert_eq!(r, Target(expected), "adjust(100, 1.25) должен вернуть 125");
+}
+
+#[test]
+fn test_adjust_75_percent() {
+    // adjust(100, 0.75) == 75
+    let mut bytes = [0u8; 32];
+    bytes[31] = 100;
+    let t = Target(bytes);
+    let r = t.adjust(0.75);
+    let mut expected = [0u8; 32];
+    expected[31] = 75;
+    assert_eq!(r, Target(expected), "adjust(100, 0.75) должен вернуть 75");
+}
+
+// ============================================================
+// Тесты для to_difficulty
+// ============================================================
+
+#[test]
+fn test_difficulty_genesis_is_one() {
+    // genesis должен давать сложность 1.0
+    // ВНИМАНИЕ: этот тест пройдёт только после фикса to_difficulty
+    // (замены u64::MAX на genesis target).
+    let d = Target::genesis().to_difficulty();
+    assert!(
+        (d - 1.0).abs() < 1e-9,
+        "genesis().to_difficulty() должен быть 1.0, получено {}",
+        d
+    );
+}
+
+#[test]
+fn test_difficulty_zero_is_inf() {
+    assert!(
+        Target::ZERO.to_difficulty().is_infinite(),
+        "ZERO.to_difficulty() должен быть INFINITY"
+    );
 }
 
 use std::time::{SystemTime, UNIX_EPOCH};

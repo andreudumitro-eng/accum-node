@@ -1,17 +1,22 @@
 //! Node: main node struct and impl
 
-use crate::block::{Block, BlockHeader, Transaction, TxIn, TxOut};
+use crate::block::{Block, BlockHeader, Transaction, TxOut};
 use crate::config::Config;
-use crate::consensus::{calculate_poci, EquivocationProof};
+use crate::consensus::{calculate_poci, EquivocationProof, PoCIResult, SlashingPool};
 use crate::constants::*;
 use crate::crypto::Argon2Cache;
+use crate::difficulty::adjust_difficulty;
+use crate::epoch_commit::EpochCommit;
 use crate::genesis::create_genesis_block;
 use crate::miner::{LoyaltyData, MinerData, Share, SharePool};
 use crate::network::{AttackDetection, DDoSProtection};
-use crate::p2p::{P2PMessage, P2PNode, SyncManager, SyncStatus};
-use crate::storage::{Bond, Checkpoint, ProductionStorage, CF_BONDS, CF_CHECKPOINTS, CF_MINERS, CF_STATE};
-use crate::difficulty::adjust_difficulty;
-use std::io::Write;
+use crate::p2p::{
+    validate_block_coinbase, validate_block_no_double_spend, P2PMessage, P2PNode, SyncManager,
+    SyncStatus,
+};
+use crate::storage::{
+    Bond, Checkpoint, ProductionStorage, CF_BONDS, CF_CHECKPOINTS, CF_MINERS, CF_STATE,
+};
 use crate::types::*;
 use crate::wallet::Wallet;
 use crate::{is_saving_state, set_saving_state, should_shutdown};
@@ -20,7 +25,18 @@ use rocksdb::IteratorMode;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Write;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::Mutex;
+
+/// How many recent heights we keep txids in `processed_txids` for dedup.
+const PROCESSED_TXIDS_RETENTION: Height = 1_000;
+
+/// Genesis emission (LYT).
+const GENESIS_SUPPLY_LYT: u64 = 500_000_000;
+
 pub struct Node {
     pub height: Height,
     pub epoch: u32,
@@ -43,16 +59,26 @@ pub struct Node {
     pub peak_hash_rate: u64,
     pub wallet: Option<Wallet>,
     pub config: Config,
-    pub equivocation_proofs: HashMap<MinerId, Vec<EquivocationProof>>,
+    pub slashing_pool: SlashingPool,
     pub attack_detection: AttackDetection,
     pub checkpoints: Vec<Checkpoint>,
     pub ddos_protection: DDoSProtection,
-    pub processed_txids: HashSet<Txid>,
+    pub processed_txids: HashMap<Txid, Height>,
     pub sync_manager: SyncManager,
     pub total_emitted: u64,
+    pub last_block_time_secs: u64,
+    pub last_nonce: u64,
+    pub last_stats_time: Timestamp,
+    pub last_sync_request_time: Timestamp,
+    pub last_share_time: Timestamp,
+    pub cached_difficulty: Option<(Height, Target)>,
 }
 
 impl Node {
+    // ------------------------------------------------------------------
+    // Construction / bootstrap
+    // ------------------------------------------------------------------
+
     pub fn new(config: Config) -> Result<Arc<RwLock<Self>>, String> {
         println!("🔧 [1] Creating storage...");
         let network = "mainnet";
@@ -72,6 +98,7 @@ impl Node {
         let miner_id = wallet.miner_id;
         println!("🔧 [8] Wallet loaded: {}", wallet.address);
 
+        let now = current_timestamp();
         println!("🔧 [9] Creating node struct...");
         let mut node = Self {
             height,
@@ -89,19 +116,25 @@ impl Node {
             p2p: None,
             blocks_found: 0,
             shares_found: 0,
-            start_time: current_timestamp(),
+            start_time: now,
             miner_id,
             last_hash_rate: 0,
             peak_hash_rate: 0,
             wallet: Some(wallet),
             config: config.clone(),
-            equivocation_proofs: HashMap::new(),
+            slashing_pool: SlashingPool::new(),
             attack_detection: AttackDetection::new(),
             checkpoints: Vec::new(),
             ddos_protection: DDoSProtection::new(),
-            processed_txids: HashSet::new(),
+            processed_txids: HashMap::new(),
             sync_manager: SyncManager::new(),
             total_emitted: 0,
+            last_block_time_secs: 0,
+            last_nonce: 0,
+            last_stats_time: now,
+            last_sync_request_time: 0,
+            last_share_time: now,
+            cached_difficulty: None,
         };
         println!("🔧 [10] Node struct created");
 
@@ -113,11 +146,13 @@ impl Node {
             println!("🔧 [12] Loading state from DB...");
             node.load_state()?;
             println!("🔧 [13] Verifying genesis signature...");
-            node.verify_genesis_signature();
+            if !node.verify_genesis_signature() {
+                return Err("Genesis block verification failed".to_string());
+            }
         }
-        // Синхронизируем эпоху share_pool с эпохой ноды (важно после перезапуска)
         node.share_pool.current_epoch = node.epoch;
         println!("🔧 [14] State loaded");
+
         println!("🔧 [15] Loading checkpoints...");
         node.load_checkpoints()?;
         println!("🔧 [16] Checkpoints loaded");
@@ -130,29 +165,10 @@ impl Node {
         let mut p2p = P2PNode::new(
             config.network.port,
             config.network.bootnodes.clone(),
-            node_arc.clone(),
         )
         .map_err(|e| e.to_string())?;
         println!("🔧 [20] P2P created");
 
-        // Настраиваем callback для отправки сообщений через P2P
-        {
-            let node_ref = node_arc.clone();
-            p2p.sync_manager.send_message_callback =
-                Some(Box::new(move |peer_id: &PeerId, msg: P2PMessage| {
-                    let mut node = node_ref.write();
-                    if let Some(p2p) = node.p2p.as_mut() {
-                        for peer in p2p.peers.values_mut() {
-                            if &peer.peer_id == peer_id {
-                                return peer.send_message(&msg).map_err(|e| e.to_string());
-                            }
-                        }
-                    }
-                    Err("Peer not found".to_string())
-                }));
-        }
-
-        // Сохраняем P2P в ноду и инициализируем состояние
         {
             let mut node = node_arc.write();
             let height = node.height;
@@ -170,13 +186,16 @@ impl Node {
         Ok(node_arc)
     }
 
+    // ------------------------------------------------------------------
+    // Wallet
+    // ------------------------------------------------------------------
+
     fn load_or_create_wallet(storage: &ProductionStorage) -> Result<Wallet, String> {
         let wallet_path = dirs::home_dir()
             .ok_or("Cannot find home dir")?
             .join(".accum")
             .join("wallet.json");
 
-        // 1. Пытаемся загрузить из файла
         if wallet_path.exists() {
             println!("🔑 Loading wallet from {}", wallet_path.display());
             let content = fs::read_to_string(&wallet_path)
@@ -190,26 +209,28 @@ impl Node {
             let wallet_data: WalletFile = serde_json::from_str(&content)
                 .map_err(|e| format!("Invalid wallet file: {}", e))?;
 
-            let secret_key =
-                hex::decode(&wallet_data.private_key).map_err(|_| "Invalid private key format")?;
+            let secret_key = hex::decode(&wallet_data.private_key)
+                .map_err(|_| "Invalid private key format".to_string())?;
 
             let wallet = Wallet::from_secret_key(&secret_key)?;
             println!("✅ Wallet loaded: {}", wallet.address);
             return Ok(wallet);
         }
 
-        // 2. Пытаемся загрузить из базы
         if let Some(wallet_data) = storage.get_state::<Vec<u8>>("wallet")? {
             println!("🔑 Loading wallet from database...");
-            let secret_key: [u8; 32] = wallet_data.try_into().map_err(|_| "Invalid wallet data")?;
+            let secret_key: [u8; 32] = wallet_data
+                .try_into()
+                .map_err(|_| "Invalid wallet data".to_string())?;
             let wallet = Wallet::from_secret_key(&secret_key)?;
 
-            // Сохраняем в файл для будущих запусков
             let wallet_json = serde_json::json!({
                 "private_key": hex::encode(&wallet.secret_key),
             });
-            fs::create_dir_all(wallet_path.parent().unwrap())
-                .map_err(|e| format!("Failed to create .accum directory: {}", e))?;
+            if let Some(parent) = wallet_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create .accum directory: {}", e))?;
+            }
             fs::write(
                 &wallet_path,
                 serde_json::to_string_pretty(&wallet_json).unwrap(),
@@ -220,24 +241,23 @@ impl Node {
             return Ok(wallet);
         }
 
-        // 3. Создаем новый кошелек
         println!("🆕 No wallet found, creating new wallet...");
         let wallet = Wallet::generate()?;
 
-        // Сохраняем в файл
         let wallet_json = serde_json::json!({
             "private_key": hex::encode(&wallet.secret_key),
         });
-        fs::create_dir_all(wallet_path.parent().unwrap())
-            .map_err(|e| format!("Failed to create .accum directory: {}", e))?;
+        if let Some(parent) = wallet_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create .accum directory: {}", e))?;
+        }
         fs::write(
             &wallet_path,
             serde_json::to_string_pretty(&wallet_json).unwrap(),
         )
         .map_err(|e| format!("Failed to save wallet: {}", e))?;
 
-        // Сохраняем в базу
-        let _ = storage.save_state("wallet", &wallet.secret_key.to_vec());
+        storage.save_state("wallet", &wallet.secret_key.to_vec())?;
 
         println!("✅ New wallet created!");
         println!("📫 Address: {}", wallet.address);
@@ -247,16 +267,21 @@ impl Node {
 
         Ok(wallet)
     }
+
+    // ------------------------------------------------------------------
+    // State loading
+    // ------------------------------------------------------------------
+
     fn load_state(&mut self) -> Result<(), String> {
         println!("📂 Loading blocks...");
-        let total_blocks = self.height + 1;
+        let denom = self.height.max(1) as f64;
         for h in 0..=self.height {
             if h % 10 == 0 || h == self.height {
                 println!(
                     "   ⏳ Loading block {}/{} ({:.1}%)",
                     h,
                     self.height,
-                    (h as f64 / self.height as f64) * 100.0
+                    (h as f64 / denom) * 100.0
                 );
             }
             if let Some(block) = self.storage.get_block(h)? {
@@ -270,7 +295,7 @@ impl Node {
         println!("   ✅ Blocks loaded: {}", self.blocks.len());
 
         println!("📂 Loading miners...");
-        let mut miner_count = 0;
+        let mut miner_count = 0usize;
         let mut iter = self
             .storage
             .db
@@ -284,7 +309,7 @@ impl Node {
         println!("   ✅ Miners loaded: {}", miner_count);
 
         println!("📂 Loading bonds...");
-        let mut bond_count = 0;
+        let mut bond_count = 0usize;
         let mut iter = self
             .storage
             .db
@@ -298,35 +323,73 @@ impl Node {
         println!("   ✅ Bonds loaded: {}", bond_count);
 
         println!("📂 Loading loyalty...");
-        let mut loyalty_count = 0;
+        let mut loyalty_count = 0usize;
         let mut iter = self
             .storage
             .db
             .iterator_cf(self.storage.cf_handle(CF_STATE), IteratorMode::Start);
         while let Some(Ok((key, value))) = iter.next() {
             if let Ok(key_str) = std::str::from_utf8(&key) {
-                if key_str.starts_with("loyalty_") {
+                if let Some(hex_part) = key_str.strip_prefix("loyalty_") {
                     if let Ok(loyalty) = bincode::deserialize::<LoyaltyData>(&value) {
-                        let miner_id_str = &key_str[8..];
-                        if let Ok(miner_id_bytes) = hex::decode(miner_id_str) {
-                            let mut miner_id = [0u8; 20];
-                            miner_id.copy_from_slice(&miner_id_bytes);
-                            self.loyalty.insert(miner_id, loyalty);
-                            loyalty_count += 1;
+                        if let Ok(bytes) = hex::decode(hex_part) {
+                            if bytes.len() == 20 {
+                                let mut miner_id = [0u8; 20];
+                                miner_id.copy_from_slice(&bytes);
+                                self.loyalty.insert(miner_id, loyalty);
+                                loyalty_count += 1;
+                            }
                         }
                     }
                 }
             }
         }
         println!("   ✅ Loyalty loaded: {}", loyalty_count);
+
         println!("📂 Loading emission...");
         self.total_emitted = self.storage.get_state::<u64>("total_emitted")?.unwrap_or(0);
         println!("   ✅ Total emitted: {} LYT", self.total_emitted);
 
+        // Check for incomplete epoch: if epoch_processing == N,
+        // the previous process_epoch_end did not finish.
+        if let Some(processing_epoch) = self.storage.get_state::<u32>("epoch_processing")? {
+            if processing_epoch == self.epoch {
+                println!(
+                    "⚠️ Found incomplete epoch {} — rewards may have been partially paid",
+                    processing_epoch
+                );
+                // Increment epoch so process_epoch_end never runs again.
+                // Any double-payment damage is already done — this only
+                // protects against a second run.
+                self.epoch = self.epoch.saturating_add(1);
+                let _ = self.storage.save_state("epoch", &self.epoch);
+                let _ = self.storage.delete_state("epoch_processing");
+                println!("   ✅ Epoch {} marked as completed (recovery)", processing_epoch);
+            }
+        }
+
+        // Rebuild processed_txids from the last N blocks.
+        // We only keep txids from the last PROCESSED_TXIDS_RETENTION blocks
+        // to bound memory; the same window is used in prune_processed_txids.
+        println!("📂 Rebuilding processed_txids...");
+        let from_height = self.height.saturating_sub(PROCESSED_TXIDS_RETENTION);
+        let mut txid_count = 0usize;
+        for h in from_height..=self.height {
+            if let Ok(Some(block)) = self.storage.get_block(h) {
+                for tx in &block.transactions {
+                    if !tx.is_coinbase() {
+                        let txid = tx.txid(&mut self.argon2);
+                        self.processed_txids.insert(txid, h);
+                        txid_count += 1;
+                    }
+                }
+            }
+        }
+        println!("   ✅ Processed txids rebuilt: {}", txid_count);
+
         println!("📂 Loading mempool...");
         self.mempool = self.storage.load_mempool()?;
         println!("   ✅ Mempool loaded: {}", self.mempool.len());
-
         println!("💾 ✅ State loaded successfully!");
         println!(
             "   Height: {}, Miners: {}, Bonds: {}, Loyalty: {}",
@@ -348,6 +411,7 @@ impl Node {
                 self.checkpoints.push(checkpoint);
             }
         }
+        self.checkpoints.sort_by_key(|c| c.height);
 
         if let Some(last) = self.checkpoints.last() {
             println!(
@@ -359,15 +423,23 @@ impl Node {
         Ok(())
     }
 
+    // ------------------------------------------------------------------
+    // Genesis
+    // ------------------------------------------------------------------
+
     fn init_genesis(&mut self) {
-        let (header, coinbase) = create_genesis_block();
+        let genesis_block = create_genesis_block(self.wallet.as_ref().unwrap());
+        let header = genesis_block.header.clone();
+        let coinbase = genesis_block.transactions[0].clone();
         let txid = coinbase.txid(&mut self.argon2);
 
         let mut header = header;
         header.merkle_root = txid;
 
         let outpoint = (txid, 0);
-        let _ = self.storage.save_utxo(&outpoint, &coinbase.outputs[0]);
+        if let Err(e) = self.storage.save_utxo(&outpoint, &coinbase.outputs[0]) {
+            println!("⚠️ Failed to save genesis UTXO: {}", e);
+        }
 
         let hash = header.hash(&mut self.argon2);
 
@@ -389,114 +461,209 @@ impl Node {
 
         self.blocks.push(header.clone());
         self.block_hashes.insert(hash, 0);
-        self.timestamps.push(GENESIS_TIMESTAMP);
+        self.timestamps.push(header.timestamp);
 
-        let _ = self.storage.save_block(0, &block);
-        let _ = self.storage.save_state("height", &0u64);
-        let _ = self.storage.save_state("epoch", &1u32);
+        
 
-                // Genesis output = 500_000_000 LYT, считаем как стартовую эмиссию
-                self.total_emitted = 500_000_000;
-                let _ = self.storage.save_state("total_emitted", &self.total_emitted);
+        if let Err(e) = self.storage.save_block(0, &block) {
+            println!("⚠️ Failed to save genesis block: {}", e);
+        }
+        if let Err(e) = self.storage.save_state("height", &0u64) {
+            println!("⚠️ Failed to save height: {}", e);
+        }
+        if let Err(e) = self.storage.save_state("epoch", &1u32) {
+            println!("⚠️ Failed to save epoch: {}", e);
+        }
+
+        self.total_emitted = GENESIS_SUPPLY_LYT;
+        if let Err(e) = self
+            .storage
+            .save_state("total_emitted", &self.total_emitted)
+        {
+            println!("⚠️ Failed to save total_emitted: {}", e);
+        }
 
         println!("✅ Genesis block created");
         println!("   Hash: {}...", hex::encode(&hash[0..8]));
-        if signature.is_some() {
-            println!(
-                "   Signature: {}...",
-                hex::encode(&signature.unwrap()[0..8])
-            );
+        if let Some(sig) = &signature {
+            println!("   Signature: {}...", hex::encode(&sig[0..8]));
         }
         println!("   Height: 0\n");
     }
 
     fn verify_genesis_signature(&self) -> bool {
-        // ✅ ACCUM v3.2+ - Genesis block does not require signature
-        // The genesis block is the root of trust by definition
-
-        match self.storage.get_block(0) {
-            Ok(Some(_block)) => {
-                println!("✅ Genesis block verified (ACCUM v3.2+ spec)");
-                println!("   No signature required - this is by design");
-                true
-            }
+        let block = match self.storage.get_block(0) {
+            Ok(Some(b)) => b,
             Ok(None) => {
                 println!("⚠️ Genesis block not found!");
-                false
+                return false;
             }
             Err(e) => {
                 println!("❌ Error reading genesis block: {}", e);
-                false
+                return false;
             }
+        };
+
+        // Genesis должен иметь ровно одну транзакцию (coinbase).
+        if block.transactions.len() != 1 {
+            println!(
+                "❌ Genesis has {} transactions, expected 1",
+                block.transactions.len()
+            );
+            return false;
         }
+
+        // Проверяем, что merkle_root совпадает с txid coinbase.
+        let mut argon2 = Argon2Cache::new(ARGON2_CACHE_SIZE);
+        let coinbase_txid = block.transactions[0].txid(&mut argon2);
+        if block.header.merkle_root != coinbase_txid {
+            println!("❌ Genesis merkle_root does not match coinbase txid");
+            return false;
+        }
+
+        // Проверяем, что prev_hash нулевой.
+        if block.header.prev_hash != [0u8; 32] {
+            println!("❌ Genesis prev_hash is not zero");
+            return false;
+        }
+
+        println!("✅ Genesis block verified");
+        true
     }
+
+    // ------------------------------------------------------------------
+    // Chain accessors
+    // ------------------------------------------------------------------
 
     fn last_block(&self) -> Option<&BlockHeader> {
         self.blocks.last()
     }
 
     pub fn last_hash(&mut self) -> Hash32 {
-        if let Some(last) = self.last_block() {
-            let header = last.clone();
-            header.hash(&mut self.argon2)
+        if let Some(last) = self.last_block().cloned() {
+            last.hash(&mut self.argon2)
         } else {
             [0; 32]
         }
     }
 
     fn last_difficulty(&self) -> Target {
-        // Пересчёт на блоках 120, 240, 360, ...
-        if self.height >= DIFFICULTY_ADJUSTMENT_INTERVAL
-            && self.height % DIFFICULTY_ADJUSTMENT_INTERVAL == 0
-        {
-            let current_target = self
-                .last_block()
-                .map(|b| b.difficulty)
-                .unwrap_or_else(Target::genesis);
-
-            let start_idx = (self.height - DIFFICULTY_ADJUSTMENT_INTERVAL) as usize;
-            let end_idx = self.height as usize;
-            let recent_timestamps = &self.timestamps[start_idx..=end_idx];
-
-            return adjust_difficulty(recent_timestamps, &current_target);
-        }
-
         self.last_block()
             .map(|b| b.difficulty)
             .unwrap_or_else(Target::genesis)
     }
+       /// Difficulty for the next block (height + 1).
+    /// Retargeted every DIFFICULTY_ADJUSTMENT_INTERVAL blocks.
+    ///
+    /// Retarget triggers when the NEXT block is a multiple of the interval:
+    /// (height + 1) % interval == 0.
+    /// The window timestamps[len - window ..] contains exactly `window` real
+    /// blocks (genesis is not pushed into self.timestamps).
+    pub fn compute_difficulty_for_next_block(&mut self) -> Target {
+        let interval = DIFFICULTY_ADJUSTMENT_INTERVAL;
 
+        // Retarget for the NEXT block: check (height + 1) % interval == 0.
+        if self.height == 0 || (self.height + 1) % interval != 0 {
+            return self.last_difficulty();
+        }
+
+        // Cache: already computed for this height.
+        if let Some((h, t)) = self.cached_difficulty {
+            if h == self.height {
+                return t;
+            }
+        }
+
+        // Need `interval` timestamps: [len - interval ..].
+        let window = interval as usize;
+        if self.timestamps.len() < window {
+            return self.last_difficulty();
+        }
+
+        let slice = &self.timestamps[self.timestamps.len() - window..];
+        let current_target = self.last_difficulty();
+        let adjusted = adjust_difficulty(slice, &current_target);
+
+        if adjusted != current_target {
+            println!(
+                "⚙️ Difficulty adjusted at height {} → new target for block {} (diff={:.6e}, nbits={:08x})",
+                self.height,
+                self.height + 1,
+                adjusted.to_difficulty(),
+                adjusted.compact(),
+            );
+        }
+
+        self.cached_difficulty = Some((self.height, adjusted));
+        adjusted
+    }
     pub fn sync_progress(&self) -> f64 {
-        let best_peer = self
-            .p2p
-            .as_ref()
-            .and_then(|p| p.best_peer_height())
-            .unwrap_or(self.height);
-        if best_peer == 0 {
+        let our_height = self.height;
+
+        let best_peer = match &self.p2p {
+            None => return 1.0,
+            Some(p2p) => match p2p.best_peer_height() {
+                None => return 1.0,
+                Some(0) => return if our_height == 0 { 1.0 } else { 0.0 },
+                Some(h) => h,
+            },
+        };
+
+        if best_peer <= our_height {
             return 1.0;
         }
-        self.height as f64 / best_peer as f64
+
+        (our_height as f64 / best_peer as f64).min(1.0)
     }
 
     pub fn median_timestamp(&self) -> Option<Timestamp> {
-        if self.timestamps.len() < 11 {
+        const MEDIAN_WINDOW: usize = 11;
+
+        // Take a window of the last 11 timestamps.
+        // If there are fewer — use whatever is available
+        // (but not less than 3, otherwise the median is meaningless).
+        let take = MEDIAN_WINDOW.min(self.timestamps.len());
+        if take < 3 {
             return None;
         }
 
-        let mut last = self
+        let mut last: Vec<Timestamp> = self
             .timestamps
             .iter()
             .rev()
-            .take(11)
-            .cloned()
-            .collect::<Vec<_>>();
-        last.sort();
-        Some(last[5])
+            .take(take)
+            .copied()
+            .collect();
+        last.sort_unstable();
+        Some(last[take / 2])
     }
-    
+
+    // ------------------------------------------------------------------
+    // Epoch commit
+    // ------------------------------------------------------------------
+
+    pub fn build_epoch_commit(
+        &self,
+        completed_epoch: u32,
+        previous_commit_hash: Hash32,
+    ) -> EpochCommit {
+        EpochCommit::build(
+            completed_epoch,
+            self.height,
+            previous_commit_hash,
+            &self.share_pool.share_count,
+            &self.bonds,
+            &self.loyalty,
+        )
+    }
+
     pub fn checkpoint_at(&self, height: Height) -> Option<&Checkpoint> {
         self.checkpoints.iter().find(|c| c.height == height)
     }
+
+    // ------------------------------------------------------------------
+    // Bonds / shares
+    // ------------------------------------------------------------------
 
     pub fn add_bond(&mut self, miner_id: MinerId, amount: u64) {
         if amount < MINIMUM_BOND_LYT {
@@ -509,10 +676,21 @@ impl Node {
 
         let bond = Bond::new(amount, self.height, miner_id);
         self.bonds.insert(miner_id, bond.clone());
-        let _ = self.storage.save_bond(&miner_id, &bond);
+        if let Err(e) = self.storage.save_bond(&miner_id, &bond) {
+            println!("⚠️ Failed to save bond: {}", e);
+        }
 
         if let Some(miner) = self.miners.get_mut(&miner_id) {
             miner.bond = amount;
+            // Set payout address for the local miner from the wallet.
+            if miner_id == self.miner_id {
+                if let Some(wallet) = &self.wallet {
+                    miner.payout_address = Some(wallet.address.clone());
+                }
+            }
+            if let Err(e) = self.storage.save_miner(&miner_id, miner) {
+                println!("⚠️ Failed to persist miner after bond: {}", e);
+            }
         }
 
         println!(
@@ -538,7 +716,6 @@ impl Node {
             .get(&miner_id)
             .map(|b| b.is_active(self.height))
             .unwrap_or(false);
-
         if !bond_active {
             return false;
         }
@@ -547,6 +724,7 @@ impl Node {
 
         let target_share = self.last_difficulty().share_target();
         let expected_prev = self.last_hash();
+
         let is_valid = match share.validate(
             &target_share,
             &expected_prev,
@@ -563,26 +741,47 @@ impl Node {
 
         match self.share_pool.add_share(share.clone(), is_valid) {
             Ok(true) => {
-                let miner = self
-                    .miners
-                    .entry(miner_id)
-                    .or_insert_with(|| MinerData::new(miner_id, bond_amount, current_epoch, now));
+                {
+                    let miner = self.miners.entry(miner_id).or_insert_with(|| {
+                        MinerData::new(miner_id, bond_amount, current_epoch, now)
+                    });
+                    miner.add_share(now);
+                }
+                if let Some(miner) = self.miners.get(&miner_id) {
+                    if let Err(e) = self.storage.save_miner(&miner_id, miner) {
+                        println!(
+                            "⚠️ Failed to save miner {}: {}",
+                            hex::encode(&miner_id[0..6]),
+                            e
+                        );
+                    }
+                }
 
-                miner.add_share(now);
-
-                let loyalty = self
-                    .loyalty
-                    .entry(miner_id)
-                    .or_insert_with(LoyaltyData::new);
-                loyalty.update(current_epoch, true);
+                {
+                    let loyalty = self
+                        .loyalty
+                        .entry(miner_id)
+                        .or_insert_with(LoyaltyData::new);
+                    loyalty.update(current_epoch, true);
+                }
+                if let Some(loyalty) = self.loyalty.get(&miner_id) {
+                    let key = format!("loyalty_{}", hex::encode(&miner_id));
+                    if let Err(e) = self.storage.save_state(&key, loyalty) {
+                        println!(
+                            "⚠️ Failed to save loyalty {}: {}",
+                            hex::encode(&miner_id[0..6]),
+                            e
+                        );
+                    }
+                }
 
                 self.shares_found += 1;
+                self.last_share_time = now;
 
                 if self.shares_found % 100 == 0 {
                     print!(".");
                     let _ = std::io::stdout().flush();
                 }
-
                 true
             }
             Ok(false) => false,
@@ -590,44 +789,62 @@ impl Node {
                 if let Some(miner) = self.miners.get_mut(&miner_id) {
                     let ratio = self.share_pool.invalid_ratio(&miner_id);
                     miner.update_invalid_ratio(ratio, now);
+                    let _ = self.storage.save_miner(&miner_id, miner);
                 }
                 false
             }
         }
     }
 
+    // ------------------------------------------------------------------
+    // Mempool
+    // ------------------------------------------------------------------
+
     fn sort_mempool_by_fee(&mut self) {
+        let storage = &self.storage;
         self.mempool.sort_by(|a, b| {
-            let fee_a = a.fee(&self.storage).unwrap_or(0);
-            let fee_b = b.fee(&self.storage).unwrap_or(0);
+            let fee_a = a.fee(storage).unwrap_or(0);
+            let fee_b = b.fee(storage).unwrap_or(0);
             fee_b.cmp(&fee_a)
         });
     }
 
+    fn prune_processed_txids(&mut self) {
+        if self.processed_txids.is_empty() {
+            return;
+        }
+
+        // Собираем txid из текущего mempool — их нельзя удалять из processed_txids,
+        // иначе та же транзакция может быть принята повторно.
+        let mempool_txids: HashSet<Txid> = self
+            .mempool
+            .iter()
+            .map(|tx| tx.txid(&mut self.argon2))
+            .collect();
+
+        let cutoff = self.height.saturating_sub(PROCESSED_TXIDS_RETENTION);
+        self.processed_txids
+            .retain(|txid, h| *h > cutoff || mempool_txids.contains(txid));
+    }
+
     pub fn add_transaction_to_mempool(&mut self, tx: Transaction) -> Result<(), String> {
-        // 1. Базовая валидация
         tx.validate_basic()
             .map_err(|e| format!("Invalid transaction: {}", e))?;
-
-        // 2. Проверяем валидацию с UTXO
         tx.validate(&self.storage)
             .map_err(|e| format!("Transaction validation failed: {}", e))?;
 
         let txid = tx.txid(&mut self.argon2);
 
-        // 3. Проверяем, не обработана ли уже эта транзакция
-        if self.processed_txids.contains(&txid) {
+        if self.processed_txids.contains_key(&txid) {
             return Err("Transaction already processed".to_string());
         }
 
-        // 4. Проверяем, нет ли уже такой транзакции в мемпуле
         for existing_tx in &self.mempool {
             if existing_tx.txid(&mut self.argon2) == txid {
                 return Err("Transaction already in mempool".to_string());
             }
         }
 
-        // 5. Проверяем, что входы не используются в других транзакциях мемпула
         let mut used_inputs = HashSet::new();
         for existing_tx in &self.mempool {
             for input in &existing_tx.inputs {
@@ -636,21 +853,16 @@ impl Node {
                 }
             }
         }
-
         for input in &tx.inputs {
             if !input.is_coinbase() && used_inputs.contains(&input.outpoint()) {
                 return Err("Input already used in mempool transaction".to_string());
             }
         }
 
-        // 6. Добавляем в мемпул
         self.mempool.push(tx);
-        self.processed_txids.insert(txid);
-
-        // 7. Сортируем по fee
+        self.processed_txids.insert(txid, self.height);
         self.sort_mempool_by_fee();
 
-        // 8. Ограничиваем размер мемпула
         while self.mempool.len() > self.config.advanced.max_mempool_size {
             if let Some(removed) = self.mempool.pop() {
                 let removed_txid = removed.txid(&mut self.argon2);
@@ -658,7 +870,6 @@ impl Node {
             }
         }
 
-        // 9. Сохраняем в базу
         let _ = self.storage.save_mempool(&self.mempool);
 
         println!(
@@ -668,184 +879,577 @@ impl Node {
         Ok(())
     }
 
-    pub fn run_with_graceful_shutdown(&mut self) -> Result<(), String> {
-        // ✅ Автоматически создаём bond для локального майнера, если его нет
-        if !self.bonds.contains_key(&self.miner_id) {
-            let bond_amount = self.config.mining.bond.max(MINIMUM_BOND_LYT);
-            self.add_bond(self.miner_id, bond_amount);
-            println!("💰 Auto-created bond: {} LYT", bond_amount);
-        }
+    // ------------------------------------------------------------------
+    // Equivocation reporting
+    // ------------------------------------------------------------------
 
-        println!("\n🚀 Node starting...");
-        println!("   Height: {}", self.height);
-        println!("   Epoch: {}", self.epoch);
-        // ✅ Получаем количество пиров через Option
-        let peer_count = self.p2p.as_ref().map(|p| p.peer_count()).unwrap_or(0);
-        println!("   Peers: {}", peer_count);
+    pub fn report_equivocation(&mut self, proof: EquivocationProof) {
+        self.slashing_pool.add_proof(proof);
+    }
 
-        let mining_enabled = self.config.mining.enabled;
+    fn process_pending_slashes(&mut self) -> Result<usize, String> {
+        let height = self.height;
+        let records = {
+            let pool = &mut self.slashing_pool;
+            let storage = &self.storage;
+            let argon2 = &mut self.argon2;
+            pool.process_all(storage, argon2, height)?
+        };
 
-        if mining_enabled {
-            println!(
-                "⛏️  Solo mining enabled with {} threads",
-                self.config.mining.threads
-            );
-        }
+        let n = records.len();
+        for record in &records {
+            self.bonds.remove(&record.miner_id);
 
-        println!("\n🔄 Starting main loop...");
+            // Remove miner from the active set — otherwise it stays
+            // in PoCI with bond = 0 and may still receive rewards.
+            self.miners.remove(&record.miner_id);
 
-        let mut last_stats_time = current_timestamp();
-        let mut last_sync_request_time = 0u64;
+            // Remove from loyalty — miner is slashed, history is irrelevant.
+            self.loyalty.remove(&record.miner_id);
 
-        loop {
-            if should_shutdown() {
-                println!("\n⏳ Shutting down...");
-
-                if !is_saving_state() {
-                    set_saving_state(true);
-                    println!("💾 Saving state...");
-                    let _ = self.storage.save_mempool(&self.mempool);
-                    let _ = self.storage.flush();
-                    println!("✅ State saved");
-                }
-
-                break;
+            // Remove from storage.
+            if let Err(e) = self.storage.delete_miner(&record.miner_id) {
+                println!(
+                    "   ⚠️ Failed to delete slashed miner {}: {}",
+                    hex::encode(&record.miner_id[0..6]),
+                    e
+                );
             }
+            let loyalty_key = format!("loyalty_{}", hex::encode(&record.miner_id));
+            let _ = self.storage.delete_state(&loyalty_key);
+        }
+        Ok(n)
+    }
 
-            // 1. Обработка входящих P2P сообщений
-            if let Some(p2p) = self.p2p.as_mut() {
-                if let Err(e) = p2p.process_messages() {
+    // ------------------------------------------------------------------
+    // Main loop
+    // ------------------------------------------------------------------
+
+    pub fn tick(&mut self) -> Result<(), String> {
+        // 1. Incoming P2P messages.
+        //    process_messages only reads from sockets — it does NOT
+        //    touch Node. Actual handling is done below under our write-lock.
+        let incoming = if let Some(p2p) = self.p2p.as_mut() {
+            match p2p.process_messages() {
+                Ok(msgs) => msgs,
+                Err(e) => {
                     println!("⚠️ P2P error: {}", e);
+                    Vec::new()
                 }
             }
+        } else {
+            Vec::new()
+        };
 
-            // 2. Приём новых соединений
-            if let Some(p2p) = self.p2p.as_mut() {
-                if let Err(e) = p2p.accept_connections() {
-                    println!("⚠️ Accept error: {}", e);
+        // Handle incoming messages under our own write-lock.
+        for (msg, addr) in incoming {
+            self.handle_p2p_message(msg, addr);
+        }
+
+        // 2. Accept new connections.
+        if let Some(p2p) = self.p2p.as_mut() {
+            if let Err(e) = p2p.accept_connections() {
+                println!("⚠️ Accept error: {}", e);
+            }
+        }
+
+        // 3. Start sync if needed.
+        if let Some(p2p) = self.p2p.as_mut() {
+            if p2p.needs_sync() {
+                if let Some(peer) = p2p.sync_manager.best_peer() {
+                    p2p.sync_manager.start_sync(peer);
                 }
             }
+        }
 
-            // 3. Проверка необходимости синхронизации (старт сессии)
-            if let Some(p2p) = self.p2p.as_mut() {
-                if p2p.needs_sync() {
-                    if let Some(peer) = p2p.sync_manager.best_peer() {
-                        p2p.sync_manager.start_sync(peer);
-                    }
-                }
+        // 4. Handle sync timeouts.
+        if let Some(p2p) = self.p2p.as_mut() {
+            if let Some(_peer_id) = p2p.sync_manager.check_timeouts() {
+                println!("⚠️ Sync timeout with peer");
+                p2p.sync_manager.active_session = None;
+                p2p.sync_manager.sync_in_progress = false;
             }
+        }
 
-            // 4. Проверка таймаутов синхронизации
-            if let Some(p2p) = self.p2p.as_mut() {
-                if let Some(_peer_id) = p2p.sync_manager.check_timeouts() {
-                    println!("⚠️ Sync timeout with peer");
-                    // Сбрасываем сессию, чтобы выбрать нового пира
-                    p2p.sync_manager.active_session = None;
-                    p2p.sync_manager.sync_in_progress = false;
-                }
-            }
+        // 5. Request blocks from peer.
+        if let Some(p2p) = self.p2p.as_mut() {
+            let now = current_timestamp();
+            if now - self.last_sync_request_time >= 2 {
+                let session_data = p2p.sync_manager.active_session.as_ref().map(|session| {
+                    (
+                        session.peer_id,
+                        session.current_height,
+                        session.target_height,
+                        session.status.clone(),
+                    )
+                });
 
-            // 5. Запрос блоков у пира
-            if let Some(p2p) = self.p2p.as_mut() {
-                let now = current_timestamp();
+                if let Some((peer_id, current_height, target_height, status)) = session_data {
+                    if status == SyncStatus::Requesting {
+                        let from_height = current_height + 1;
+                        let to_height = (from_height + SYNC_BATCH_SIZE - 1).min(target_height);
 
-                // Запрашиваем блоки не чаще чем раз в 2 секунды
-                if now - last_sync_request_time >= 2 {
-                    // Забираем данные из сессии ДО mutable borrow
-                    let session_data = p2p.sync_manager.active_session.as_ref().map(|session| {
-                        (
-                            session.peer_id,
-                            session.current_height,
-                            session.target_height,
-                            session.status.clone(),
-                        )
-                    });
-
-                    if let Some((peer_id, current_height, target_height, status)) = session_data {
-                        if status == SyncStatus::Requesting {
-                            let from_height = current_height + 1;
-                            let to_height = (from_height + SYNC_BATCH_SIZE - 1).min(target_height);
-
-                            if from_height <= to_height {
-                                // ✅ ПРАВИЛЬНЫЙ ВЫЗОВ - без передачи p2p
-                                match p2p
-                                    .sync_manager
-                                    .request_blocks_from_peer(&peer_id, from_height)
-                                {
-                                    Ok(_) => {
-                                        last_sync_request_time = now;
-                                        if let Some(session) =
-                                            p2p.sync_manager.active_session.as_mut()
-                                        {
-                                            session.status = SyncStatus::Receiving;
-                                            session.last_activity = now;
+                        if from_height <= to_height {
+                            match p2p
+                                .sync_manager
+                                .request_blocks_from_peer(&peer_id, from_height)
+                            {
+                                Ok(msg) => {
+                                    self.last_sync_request_time = now;
+                                    // Send message directly to the peer.
+                                    for (peer_addr, peer) in p2p.peers.iter_mut() {
+                                        if peer.get_peer_id() == peer_id {
+                                            let _ = peer.send_message(&msg);
+                                            break;
                                         }
                                     }
-                                    Err(e) => {
-                                        println!("⚠️ Failed to request blocks: {}", e);
-                                        p2p.sync_manager.active_session = None;
-                                        p2p.sync_manager.sync_in_progress = false;
+                                    if let Some(session) = p2p.sync_manager.active_session.as_mut()
+                                    {
+                                        session.status = SyncStatus::Receiving;
+                                        session.last_activity = now;
                                     }
                                 }
-                            } else {
-                                if let Some(session) = p2p.sync_manager.active_session.as_mut() {
-                                    session.status = SyncStatus::Completed;
+                                Err(e) => {
+                                    println!("⚠️ Failed to request blocks: {}", e);
+                                    p2p.sync_manager.active_session = None;
                                     p2p.sync_manager.sync_in_progress = false;
-                                    println!(
-                                        "✅ Sync completed at height {}",
-                                        session.current_height
-                                    );
                                 }
+                            }
+                        } else {
+                            if let Some(session) = p2p.sync_manager.active_session.as_mut() {
+                                session.status = SyncStatus::Completed;
+                                p2p.sync_manager.sync_in_progress = false;
+                                println!("✅ Sync completed at height {}", session.current_height);
                             }
                         }
                     }
                 }
             }
-
-            // 7. Майнинг (только когда синхронизированы)
-            let is_syncing = self.p2p.as_ref().map(|p| p.is_syncing()).unwrap_or(true);
-            if mining_enabled && !is_syncing && self.sync_progress() >= 0.99 {
-                self.mine_block();
-            }
-
-            // 8. Статистика
-            let now = current_timestamp();
-            if now - last_stats_time >= STATS_UPDATE_INTERVAL_MS / 1000 {
-                let sync_progress = self.sync_progress();
-                let sync_status = if sync_progress < 0.99 {
-                    format!(" (syncing: {:.1}%)", sync_progress * 100.0)
-                } else {
-                    String::new()
-                };
-
-                // ✅ Получаем количество пиров через Option
-                let peer_count = self.p2p.as_ref().map(|p| p.peer_count()).unwrap_or(0);
-                print!(
-                    "\r📊 Height: {} | Epoch: {} | Peers: {} | Shares: {}{}",
-                    self.height, self.epoch, peer_count, self.shares_found, sync_status
-                );
-                let _ = std::io::stdout().flush();
-
-                last_stats_time = now;
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
-        Ok(())
+        // 6. Mining is handled by a dedicated thread in main.rs.
+        //    Do NOT call mine_block() here — it holds write-lock during the
+        //    entire batch and would freeze RPC/P2P.
+
+                // 7. Stats.
+                let now = current_timestamp();
+                if now.saturating_sub(self.last_stats_time) >= 1 {
+                    use colored::Colorize;
+        
+                    let sync_progress = self.sync_progress();
+                    let sync_status = if sync_progress < 0.99 {
+                        format!(" syncing={:.1}%", sync_progress * 100.0)
+                    } else {
+                        String::new()
+                    };
+        
+                    let peer_count = self.p2p.as_ref().map(|p| p.peer_count()).unwrap_or(0);
+        
+                    let avg = if self.timestamps.len() >= 2 {
+                        let take = 10.min(self.timestamps.len() - 1);
+                        let start = self.timestamps[self.timestamps.len() - 1 - take];
+                        let end = *self.timestamps.last().unwrap();
+                        let diff = end.saturating_sub(start);
+                        if diff > 0 && diff < 31_536_000 {
+                            diff as f64 / take as f64
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    };
+        
+                    let current_diff = self
+                        .blocks
+                        .last()
+                        .map(|b| b.difficulty.to_difficulty())
+                        .unwrap_or(1.0);
+        
+                    let current_nbits = self
+                        .blocks
+                        .last()
+                        .map(|b| b.difficulty.compact())
+                        .unwrap_or(0);
+        
+                    print!(
+                        "\r\x1b[K{tag} {h} {e} {p} {sh} {avg} {nonce} {diff}{sync}",
+                        tag   = "[STATUS]".bright_black(),
+                        h     = format!("height={}", self.height).cyan(),
+                        e     = format!("epoch={}", self.epoch).cyan(),
+                        p     = format!("peers={}", peer_count).cyan(),
+                        sh    = format!("shares={}", self.shares_found).cyan(),
+                        avg   = format!("avg={:.1}s", avg).cyan(),
+                        nonce = format!("nonce={}", self.last_nonce).cyan(),
+                        diff  = format!("diff={:.6e} nbits={:08x}", current_diff, current_nbits).yellow(),
+                        sync  = sync_status.bright_black(),
+                    );
+                    let _ = std::io::stdout().flush();
+                    self.last_stats_time = now;
+                }
+        
+                Ok(())
+            }
+
+            fn handle_p2p_message(&mut self, msg: P2PMessage, addr: SocketAddr) {
+                // Take a snapshot of data we may need while not holding a mutable
+                // borrow on self.p2p. All node-side work uses `self` directly
+                // because we are already under the write-lock in tick().
+                let p2p = match self.p2p.as_mut() {
+                    Some(p) => p,
+                    None => return,
+                };
+        
+                // Collect peer-list for GetPeers response before any mutable borrow.
+                let peers_for_response: Option<Vec<SocketAddr>> = match &msg {
+                    P2PMessage::GetPeers => Some(p2p.peers.keys().copied().collect()),
+                    _ => None,
+                };
+        
+                let peer = match p2p.peers.get_mut(&addr) {
+                    Some(p) => p,
+                    None => return,
+                };
+        
+                match msg {
+                    P2PMessage::Version {
+                        version: _,
+                        timestamp,
+                        height,
+                        best_hash,
+                        peer_id,
+                    } => {
+                        let latency = current_timestamp().saturating_sub(timestamp);
+                        p2p.sync_manager
+                            .update_peer(peer_id, addr, height, best_hash, latency);
+                        peer.update_state(height, best_hash);
+                        let _ = peer.send_message(&P2PMessage::Verack);
+                    }
+                    P2PMessage::Verack => {}
+                    P2PMessage::Ping(nonce) => {
+                        let _ = peer.send_message(&P2PMessage::Pong(nonce));
+                    }
+                    P2PMessage::Pong(_) => {}
+                    P2PMessage::GetBlocks {
+                        from_height,
+                        max_count,
+                    } => {
+                        let mut blocks = Vec::new();
+                        let end = from_height.saturating_add(max_count as u64);
+                        for h in from_height..end {
+                            if let Ok(Some(block)) = self.storage.get_block(h) {
+                                blocks.push(block);
+                            } else {
+                                break;
+                            }
+                        }
+                        if !blocks.is_empty() {
+                            let _ = peer.send_message(&P2PMessage::Blocks(blocks));
+                        }
+                    }
+                    P2PMessage::Blocks(blocks) => {
+                        let peer_id = peer.get_peer_id();
+        
+                        // Temporary take sync_manager out to avoid double mutable borrow.
+                        let mut sync_manager = self
+                            .p2p
+                            .as_mut()
+                            .map(|p| std::mem::replace(&mut p.sync_manager, SyncManager::new()))
+                            .unwrap();
+        
+                        let verification_result = sync_manager
+                            .verify_and_accept_blocks(&blocks, self);
+        
+                        // Put sync_manager back.
+                        if let Some(p2p) = self.p2p.as_mut() {
+                            p2p.sync_manager = sync_manager;
+                        }
+        
+                        match verification_result {
+                            Ok(new_height) => {
+                                let p2p = self.p2p.as_mut().unwrap();
+                                p2p.local_height = new_height;
+                                p2p.sync_manager.local_height = new_height;
+                                let mut argon2 = Argon2Cache::new(ARGON2_CACHE_SIZE);
+                                if let Some(last) = blocks.last() {
+                                    p2p.local_best_hash = last.header.hash(&mut argon2);
+                                }
+                                let _ = p2p.sync_manager.on_blocks_received(&blocks, &peer_id);
+        
+                                println!(
+                                    "✅ Synced and stored {} blocks, new height: {}",
+                                    blocks.len(),
+                                    new_height
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("❌ Failed to verify and store blocks: {}", e);
+                                let p2p = self.p2p.as_mut().unwrap();
+                                if let Some(peer) = p2p.peers.get_mut(&addr) {
+                                    peer.ban(&format!("Invalid blocks: {}", e));
+                                }
+                            }
+                        }
+                    }
+                    P2PMessage::Share(share) => {
+                        let accepted = self.add_share(share.clone());
+        
+                        if accepted {
+                            let msg = P2PMessage::Share(share);
+                            let p2p = self.p2p.as_mut().unwrap();
+                            for (peer_addr, peer) in p2p.peers.iter_mut() {
+                                if *peer_addr != addr && !peer.is_banned() {
+                                    let _ = peer.send_message(&msg);
+                                }
+                            }
+                        }
+                    }
+                    P2PMessage::Block {
+                        header,
+                        transactions,
+                        signature,
+                        pubkey,
+                    } => {
+                        let expected_height = self.height + 1;
+                        let prev_hash = self.last_hash();
+        
+                        if header.prev_hash != prev_hash {
+                            return;
+                        }
+        
+                        let hash = header.hash(&mut self.argon2);
+                        if !header.difficulty.is_met_by(&hash) {
+                            println!("⚠️ Received invalid block (PoW failed)");
+                            return;
+                        }
+        
+                        if let Some(cp) = self.checkpoint_at(expected_height) {
+                            if hash != cp.block_hash {
+                                println!(
+                                    "⚠️ Block hash conflicts with checkpoint at height {}",
+                                    expected_height
+                                );
+                                return;
+                            }
+                        }
+        
+                        if let (Some(sig), Some(pk)) = (&signature, &pubkey) {
+                            if !Wallet::verify_signature(pk, sig, &hash) {
+                                println!("⚠️ Received block with invalid signature");
+                                return;
+                            }
+                        } else {
+                            println!("⚠️ Received block without signature");
+                            return;
+                        }
+        
+                        let prev_timestamp = if self.height > 0 {
+                            self.blocks.last().map(|b| b.timestamp)
+                        } else {
+                            None
+                        };
+                        let median = self.median_timestamp();
+                        if !header.validate_timestamp(prev_timestamp, median) {
+                            println!("⚠️ Received block with invalid timestamp");
+                            return;
+                        }
+        
+                        let computed_root =
+                            SyncManager::compute_merkle_root(&transactions, &mut self.argon2);
+                        if header.merkle_root != computed_root {
+                            println!("⚠️ Received block with invalid merkle root");
+                            return;
+                        }
+        
+                        let block = Block {
+                            header: header.clone(),
+                            transactions: transactions.clone(),
+                            signature,
+                            pubkey,
+                        };
+        
+                        if let Err(e) = validate_block_coinbase(&block, &self.storage) {
+                            println!("⚠️ Received block with invalid coinbase: {}", e);
+                            return;
+                        }
+        
+                        if let Err(e) = validate_block_no_double_spend(&block) {
+                            println!("⚠️ Received block with double spend: {}", e);
+                            return;
+                        }
+        
+                        let new_height = expected_height;
+                        if let Err(e) = self.storage.save_block(new_height, &block) {
+                            println!("❌ Failed to save received block: {}", e);
+                            return;
+                        }
+        
+                        self.blocks.push(header.clone());
+                        self.block_hashes.insert(hash, new_height);
+                        self.timestamps.push(header.timestamp);
+                        self.height = new_height;
+                        self.cached_difficulty = None;
+        
+                        self.update_utxo_set(&block);
+
+                                                // Height сохраняем ДО process_epoch_end — если оно упадёт,
+                        // height всё равно уже зафиксирован.
+                        let _ = self.storage.save_state("height", &self.height);
+
+                        // Epoch transition when syncing via P2P.
+                        if new_height % EPOCH_BLOCKS == 0 {
+                            if let Err(e) = self.process_epoch_end() {
+                                println!("⚠️ Epoch processing failed: {}", e);
+                            }
+                        }
+
+                        // Epoch сохраняем ПОСЛЕ process_epoch_end — epoch мог измениться.
+                        let _ = self.storage.save_state("epoch", &self.epoch);
+
+                        // Чистим processed_txids, иначе растёт неограниченно.
+                        self.prune_processed_txids();
+
+                        let mut txids_in_block = HashSet::new();
+                        for tx in &block.transactions {
+                            if !tx.is_coinbase() {
+                                let txid = tx.txid(&mut self.argon2);
+                                txids_in_block.insert(txid);
+                                self.processed_txids.insert(txid, new_height);
+                            }
+                        }
+        
+                        let old_mempool = std::mem::take(&mut self.mempool);
+                        let mut new_mempool = Vec::with_capacity(old_mempool.len());
+                        for tx in old_mempool {
+                            let txid = tx.txid(&mut self.argon2);
+                            if !txids_in_block.contains(&txid) {
+                                new_mempool.push(tx);
+                            }
+                        }
+                        self.mempool = new_mempool;
+        
+                        let _ = self.storage.save_mempool(&self.mempool);
+        
+                        let p2p = self.p2p.as_mut().unwrap();
+                        p2p.local_height = new_height;
+                        p2p.local_best_hash = hash;
+                        p2p.sync_manager.local_height = new_height;
+        
+                        println!("📥 Received and accepted block #{}", new_height);
+        
+                        let msg = P2PMessage::Block {
+                            header: header.clone(),
+                            transactions: block.transactions.clone(),
+                            signature: block.signature.clone(),
+                            pubkey: block.pubkey.clone(),
+                        };
+        
+                        for (peer_addr, peer) in p2p.peers.iter_mut() {
+                            if *peer_addr != addr && !peer.is_banned() {
+                                let _ = peer.send_message(&msg);
+                            }
+                        }
+                    }
+                    P2PMessage::EpochCommit { .. } => {}
+                    P2PMessage::GetMempool => {}
+                    P2PMessage::Mempool(_txs) => {}
+                    P2PMessage::Transaction(tx) => {
+                        let accepted = self.add_transaction_to_mempool(tx.clone()).is_ok();
+        
+                        if accepted {
+                            let msg = P2PMessage::Transaction(tx);
+                            let p2p = self.p2p.as_mut().unwrap();
+                            for (peer_addr, peer) in p2p.peers.iter_mut() {
+                                if *peer_addr != addr && !peer.is_banned() {
+                                    let _ = peer.send_message(&msg);
+                                }
+                            }
+                        }
+                    }
+                    P2PMessage::GetPeers => {
+                        if let Some(peers) = peers_for_response {
+                            let _ = peer.send_message(&P2PMessage::Peers(peers));
+                        }
+                    }
+                    P2PMessage::Peers(peers) => {
+                        // Limit how many peers we accept from a single message.
+                        // Otherwise a malicious peer can send a huge list and
+                        // blow up known_peers / memory.
+                        const MAX_PEERS_PER_MESSAGE: usize = 64;
+                        const MAX_KNOWN_PEERS: usize = 1024;
+
+                        let mut to_connect = Vec::new();
+                        for p in peers.into_iter().take(MAX_PEERS_PER_MESSAGE) {
+                            if p == addr {
+                                continue;
+                            }
+                            if !p2p.known_peers.contains(&p) && !p2p.peers.contains_key(&p) {
+                                if p2p.known_peers.len() >= MAX_KNOWN_PEERS {
+                                    break;
+                                }
+                                p2p.known_peers.insert(p);
+                                if p2p.peers.len() < MAX_PEERS {
+                                    to_connect.push(p);
+                                }
+                            }
+                        }
+                        for p in to_connect {
+                            let _ = p2p.connect_to(p);
+                        }
+                    }
+                    P2PMessage::BanPeer { peer_id, reason } => {
+                        if peer_id == peer.get_peer_id() {
+                            peer.ban(&reason);
+                        }
+                    }
+                    P2PMessage::SlashProof { miner_id, proof } => {
+                        if proof.miner_id != miner_id {
+                            peer.ban("SlashProof miner_id mismatch");
+                            return;
+                        }
+                        match proof.verify(&mut self.argon2) {
+                            Ok(true) => {
+                                self.report_equivocation(*proof);
+                                println!(
+                                    "⚖️ Equivocation proof accepted for {}...",
+                                    hex::encode(&miner_id[0..8])
+                                );
+                            }
+                            Ok(false) => {
+                                println!(
+                                    "⚠️ Invalid equivocation proof for {}...",
+                                    hex::encode(&miner_id[0..8])
+                                );
+                            }
+                            Err(e) => {
+                                peer.ban(&format!("Invalid SlashProof: {}", e));
+                            }
+                        }
+                    }
+                    P2PMessage::Checkpoint(_) => {}
+                    P2PMessage::SyncRequest { .. } => {}
+                    P2PMessage::SyncResponse(_blocks) => {}
+                    P2PMessage::Heartbeat(nonce) => {
+                        let _ = peer.send_message(&P2PMessage::Pong(nonce));
+                    }
+                }
+            }
+
+    pub fn shutdown(&mut self) {
+        if !is_saving_state() {
+            set_saving_state(true);
+            println!("💾 Saving state...");
+            let _ = self.storage.save_mempool(&self.mempool);
+            let _ = self.storage.flush();
+            println!("✅ State saved");
+        }
     }
 
-    fn mine_block(&mut self) {
-        // Проверяем время с последнего блока
-        if let Some(last) = self.last_block() {
-            let now = current_timestamp();
-            if now - last.timestamp < TARGET_BLOCK_TIME {
-                return;
-            }
-        }
+    // ------------------------------------------------------------------
+    // Mining
+    // ------------------------------------------------------------------
 
-                // Сначала собираем не-coinbase транзакции из mempool,
-        // проверяя fee каждой
+    pub fn mine_block(&mut self) {
+        // ---- 1. Collect non-coinbase txs from mempool. ----
         let mut non_coinbase_txs: Vec<Transaction> = Vec::new();
         let mut total_fees: u64 = 0;
         let mut total_size = 0usize;
@@ -855,7 +1459,6 @@ impl Node {
             if total_size + tx_size > 1_000_000 {
                 break;
             }
-
             match tx.fee(&self.storage) {
                 Ok(f) => {
                     total_fees = total_fees.saturating_add(f);
@@ -868,8 +1471,8 @@ impl Node {
             }
         }
 
+        // ---- 2. Build coinbase. ----
         let coinbase_total = BLOCK_REWARD_LYT.saturating_add(total_fees);
-
         let mut outputs = Vec::new();
         if let Some(wallet) = &self.wallet {
             if let Ok(mut txout) = TxOut::create_p2pkh(&wallet.address) {
@@ -877,7 +1480,6 @@ impl Node {
                 outputs.push(txout);
             }
         }
-
         if outputs.is_empty() {
             println!("⚠️ Unable to create block reward output");
             return;
@@ -885,16 +1487,16 @@ impl Node {
 
         let coinbase = Transaction::coinbase(outputs, self.height + 1);
         let mut txs = vec![coinbase];
-        txs.extend(non_coinbase_txs);        
+        txs.extend(non_coinbase_txs);
 
+        // ---- 3. Header + merkle. ----
         let prev_hash = self.last_hash();
-        let difficulty = self.last_difficulty();
+        let difficulty = self.compute_difficulty_for_next_block();
         let mut header = BlockHeader::new(prev_hash, self.epoch, difficulty);
 
         let mut hashes: Vec<Hash32> = txs.iter().map(|tx| tx.txid(&mut self.argon2)).collect();
-
         while hashes.len() > 1 {
-            let mut next = Vec::new();
+            let mut next = Vec::with_capacity((hashes.len() + 1) / 2);
             for chunk in hashes.chunks(2) {
                 let mut data = Vec::with_capacity(64);
                 data.extend_from_slice(&chunk[0]);
@@ -903,134 +1505,110 @@ impl Node {
                 } else {
                     data.extend_from_slice(&chunk[0]);
                 }
-                let hash = Sha256::digest(&data);
                 let mut arr = [0u8; 32];
-                arr.copy_from_slice(&hash);
+                arr.copy_from_slice(&Sha256::digest(&data));
                 next.push(arr);
             }
             hashes = next;
         }
+        header.merkle_root = hashes.first().copied().unwrap_or([0; 32]);
 
-        header.merkle_root = if hashes.is_empty() {
-            [0; 32]
-        } else {
-            hashes[0]
-        };
+                // ---- 4. Mine (multi-threaded). ----
+                let target_share = difficulty.share_target();
+                let target_prefilter = difficulty.prefilter_target();
+                let header_bytes = header.to_bytes();
+        
+                let best_hash_shared = Arc::new(Mutex::new([0xffu8; 32]));
+                let best_nonce_shared = Arc::new(AtomicU64::new(0));
+                let block_found = Arc::new(AtomicBool::new(false));
+        
+                let num_threads = self.config.mining.threads.max(1) as u64;
+                let batch = MINING_BATCH_SIZE;
+        
+                let start_time = std::time::Instant::now();
+        
+                std::thread::scope(|scope| {
+                    for t in 0..num_threads {
+                        let best_hash_ref = Arc::clone(&best_hash_shared);
+                        let best_nonce_ref = Arc::clone(&best_nonce_shared);
+                        let found_ref = Arc::clone(&block_found);
+                        let hb = &header_bytes;
+        
+                        scope.spawn(move || {
+                            let mut local_argon2 = Argon2Cache::new(ARGON2_CACHE_SIZE);
+        
+                            let mut nonce = t;
+                            while nonce < batch {
+                                if found_ref.load(AtomicOrdering::Relaxed) {
+                                    break;
+                                }
+        
+                                if !Argon2Cache::prefilter(hb, nonce, &target_prefilter) {
+                                    nonce += num_threads;
+                                    continue;
+                                }
+        
+                                let hash = header_with_nonce_hash(hb, nonce, &mut local_argon2);
+        
+                                // Проверка: найден ли БЛОК (полный target).
+                                if difficulty.is_met_by(&hash) {
+                                    best_nonce_ref.store(nonce, AtomicOrdering::Relaxed);
+                                    *best_hash_ref.lock().unwrap() = hash;
+                                    found_ref.store(true, AtomicOrdering::Relaxed);
+                                    break;
+                                }
+        
+                                // Проверка: найдена ли ШАРА (облегчённый target).
+                                if target_share.is_met_by(&hash) {
+                                    let mut best = best_hash_ref.lock().unwrap();
+                                    if hash < *best {
+                                        *best = hash;
+                                        best_nonce_ref.store(nonce, AtomicOrdering::Relaxed);
+                                    }
+                                }
+        
+                                nonce += num_threads;
+                            }
+                        });
+                    }
+                });
+        
+                let best_hash = *best_hash_shared.lock().unwrap();
+                let best_nonce = best_nonce_shared.load(AtomicOrdering::Relaxed);
+                let found_block = block_found.load(AtomicOrdering::Relaxed);
+        
+                if found_block {
+                    header.nonce = best_nonce;
+                }
+        
+                let _elapsed = start_time.elapsed();
+                
+        // ---- 5. Persist. ----
+        if found_block {
+            // header.nonce was already set right after mining completes.
 
-        let target_share = difficulty.share_target();
-        let target_prefilter = difficulty.prefilter_target();
-        let mut best_nonce = 0u64;
-        let mut best_hash = [0xff; 32];
-        let mut found_block = false;
-
-        // ✅ ОТЛАДКА
-        println!(
-            "⛏️  Mining block #{} with difficulty: {:.2}",
-            self.height + 1,
-            difficulty.to_difficulty()
-        );
-        println!("   🔍 Prefilter DISABLED - testing all nonces");
-        println!(
-            "   📊 Target[0] = {:02x}, Target[1] = {:02x}",
-            difficulty.0[0], difficulty.0[1]
-        );
-
-        // Тестируем первые 10 nonce вручную
-        for test_nonce in 0..10 {
-            let test_hash = header.hash_with_nonce(test_nonce, &mut self.argon2);
-            let meets = difficulty.is_met_by(&test_hash);
-            println!(
-                "   Nonce {}: hash[0]={:02x} {}",
-                test_nonce,
-                test_hash[0],
-                if meets { "✅ MEETS!" } else { "" }
-            );
-        }
-
-        let start_time = std::time::Instant::now();
-        let mut last_progress = 0;
-
-        for nonce in 0..MINING_BATCH_SIZE {
-            // ✅ Показываем прогресс каждые 100к nonce
-            if nonce % 100_000 == 0 && nonce > 0 {
-                let elapsed = start_time.elapsed().as_secs_f64();
-                let rate = nonce as f64 / elapsed;
-                if nonce / 100_000 > last_progress {
-                    last_progress = nonce / 100_000;
-                    print!(
-                        "\r   Nonce: {}/{} ({:.1}%) [{:.0} h/s]",
-                        nonce,
-                        MINING_BATCH_SIZE,
-                        (nonce as f64 / MINING_BATCH_SIZE as f64) * 100.0,
-                        rate
-                    );
-                    let _ = std::io::stdout().flush();
+            let mut block_txids = HashSet::new();
+            for tx in &txs {
+                if tx.is_coinbase() {
+                    continue;
+                }
+                let txid = tx.txid(&mut self.argon2);
+                if !block_txids.insert(txid) {
+                    println!("⚠️ Duplicate transaction in block, skipping");
+                    return;
                 }
             }
 
-            // ✅ Prefilter проверка - ВКЛЮЧЕНА!
-            if !Argon2Cache::prefilter(&header.to_bytes(), nonce, &target_prefilter) {
-                continue;
+            let block_preview = Block {
+                header: header.clone(),
+                transactions: txs.clone(),
+                signature: None,
+                pubkey: None,
+            };
+            if let Err(e) = crate::p2p::validate_block_no_double_spend(&block_preview) {
+                println!("⚠️ Double spend in block, skipping: {}", e);
+                return;
             }
-
-            let hash = header.hash_with_nonce(nonce, &mut self.argon2);
-
-            // Проверка на блок
-            if difficulty.is_met_by(&hash) {
-                header.nonce = nonce;
-                best_hash = hash;
-                best_nonce = nonce;
-                found_block = true;
-                println!("\n✅ BLOCK FOUND! Nonce: {}", nonce);
-                break;
-            }
-
-            // Сохраняем лучший share
-            if target_share.is_met_by(&hash) && hash < best_hash {
-                best_hash = hash;
-                best_nonce = nonce;
-            }
-        }
-
-        let elapsed = start_time.elapsed();
-        if !found_block {
-            println!("\n   Mining time: {:.2}s", elapsed.as_secs_f64());
-            println!(
-                "   Best nonce: {}, best hash: {}...",
-                best_nonce,
-                hex::encode(&best_hash[0..8])
-            );
-        }
-
-        if found_block {
-            // Нашли блок!
-            header.nonce = best_nonce;
-
-                        // ✅ ПРОВЕРЯЕМ ДУБЛИКАТЫ ТРАНЗАКЦИЙ В БЛОКЕ
-                        let mut block_txids = HashSet::new();
-                        for tx in &txs {
-                            if tx.is_coinbase() {
-                                continue;
-                            }
-                            let txid = tx.txid(&mut self.argon2);
-                            if block_txids.contains(&txid) {
-                                println!("⚠️ Duplicate transaction in block, skipping");
-                                return;
-                            }
-                            block_txids.insert(txid);
-                        }
-            
-                        // ✅ ПРОВЕРЯЕМ ДУБЛИ OUTPOINT (double-spend внутри блока)
-                        let block_preview = Block {
-                            header: header.clone(),
-                            transactions: txs.clone(),
-                            signature: None,
-                            pubkey: None,
-                        };
-                        if let Err(e) = crate::p2p::validate_block_no_double_spend(&block_preview) {
-                            println!("⚠️ Double spend in block, skipping: {}", e);
-                            return;
-                        }
 
             let (signature, pubkey) = if let Some(wallet) = &self.wallet {
                 let block_hash = header.hash(&mut self.argon2);
@@ -1049,62 +1627,94 @@ impl Node {
                 pubkey,
             };
 
+            // Шару всё равно сохраняем, но без печати на экран.
             let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
-            if self.add_share(share) {
-                println!("📤 Share from block saved");
+            let _ = self.add_share(share);
+
+            let new_height = self.height + 1;
+            if let Err(e) = self.storage.save_block(new_height, &block) {
+                println!("⚠️ Failed to save block {}: {}", new_height, e);
             }
 
-            // 2. Потом обновляем состояние
-            let new_height = self.height + 1;
-            let _ = self.storage.save_block(new_height, &block);
+            let prev_ts = self
+                .blocks
+                .last()
+                .map(|b| b.timestamp)
+                .unwrap_or(header.timestamp);
+            self.last_block_time_secs = header.timestamp.saturating_sub(prev_ts);
+            self.last_nonce = best_nonce;
 
             self.blocks.push(header.clone());
             self.block_hashes.insert(best_hash, new_height);
             self.timestamps.push(header.timestamp);
             self.height = new_height;
+            self.cached_difficulty = None;
             self.blocks_found += 1;
-            let coinbase_out: u64 = block.transactions[0]
-            .outputs
-            .iter()
-            .map(|o| o.value)
-            .sum();
-            self.total_emitted = self.total_emitted.saturating_add(coinbase_out);
-            let _ = self.storage.save_state("total_emitted", &self.total_emitted);
+
+                        // Keep P2P state in sync.
+                        if let Some(p2p) = self.p2p.as_mut() {
+                            p2p.local_height = new_height;
+                            p2p.local_best_hash = best_hash;
+                            p2p.sync_manager.local_height = new_height;
+                        }
+
+            self.total_emitted = self.total_emitted.saturating_add(BLOCK_REWARD_LYT);
+            let _ = self
+                .storage
+                .save_state("total_emitted", &self.total_emitted);
 
             self.update_utxo_set(&block);
 
-            // ✅ ПОСЛЕ СОХРАНЕНИЯ БЛОКА - добавляем txid в processed
-            for tx in &block.transactions {
-                if !tx.is_coinbase() {
-                    let txid = tx.txid(&mut self.argon2);
-                    self.processed_txids.insert(txid);
-                }
+            let included_txids: HashSet<Txid> = block
+                .transactions
+                .iter()
+                .filter(|tx| !tx.is_coinbase())
+                .map(|tx| tx.txid(&mut self.argon2))
+                .collect();
+
+            for txid in &included_txids {
+                self.processed_txids.insert(*txid, self.height);
             }
 
-            self.mempool.clear();
+            let old_mempool = std::mem::take(&mut self.mempool);
+            let mut new_mempool = Vec::with_capacity(old_mempool.len());
+            for tx in old_mempool {
+                let txid = tx.txid(&mut self.argon2);
+                if included_txids.contains(&txid) {
+                    // included — drop from mempool
+                } else {
+                    self.processed_txids.remove(&txid);
+                    new_mempool.push(tx);
+                }
+            }
+            self.mempool = new_mempool;
             let _ = self.storage.save_mempool(&self.mempool);
 
+            self.prune_processed_txids();
+
             if new_height % EPOCH_BLOCKS == 0 {
-                self.process_epoch_end();
+                if let Err(e) = self.process_epoch_end() {
+                    println!("⚠️ Epoch processing failed: {}", e);
+                }
             }
 
             let _ = self.storage.save_state("height", &self.height);
             let _ = self.storage.save_state("epoch", &self.epoch);
 
-            if self.height % self.config.advanced.checkpoint_interval == 0 {
+            let interval = self.config.advanced.checkpoint_interval;
+            if interval > 0 && self.height % interval == 0 {
                 self.create_checkpoint();
             }
 
-            let _ = self
-                .storage
-                .maybe_backup(self.height, self.config.advanced.backup_interval_blocks);
-
-            // share уже сохранён выше (до обновления height)
-
+                        // Backup is handled outside the write-lock in main.rs.
+            use colored::Colorize;
             println!(
-                "\n⛏️  BLOCK MINED! Height: {}, Hash: {}...",
-                new_height,
-                hex::encode(&best_hash[0..8])
+                "\r\x1b[K{} {} {} {} {}",
+                "[BLOCK]".green().bold(),
+                format!("height={}", new_height).cyan(),
+                format!("hash={}", hex::encode(&best_hash[0..8])).yellow(),
+                format!("epoch={}", self.epoch).cyan(),
+                format!("nonce={}", best_nonce).cyan(),
             );
 
             if let Some(p2p) = &mut self.p2p {
@@ -1115,74 +1725,215 @@ impl Node {
                     pubkey: block.pubkey.clone(),
                 });
             }
-            
-        } else if best_hash != [0xff; 32] {
-            // Сохраняем share (когда блок не найден)
+        } else if best_hash != [0xffu8; 32] {
+            header.nonce = best_nonce;
             let share = Share::new(self.miner_id, header, best_nonce, best_hash);
-            if self.add_share(share) {
-                println!("📤 Share saved: {}...", hex::encode(&best_hash[0..8]));
-            }
-        } else {
-            println!("⚠️ No valid share found in this batch");
+            let _ = self.add_share(share);
+            // Do not print [SHARE] — it is visible in [STATUS] as shares=...
         }
+        // If neither block nor share — stay silent to avoid spam.
     }
-
     pub fn update_utxo_set(&mut self, block: &Block) {
         for tx in &block.transactions {
+            let txid = tx.txid(&mut self.argon2);
+
             for (i, output) in tx.outputs.iter().enumerate() {
-                let txid = tx.txid(&mut self.argon2);
                 let outpoint = (txid, i as u32);
-                let _ = self.storage.save_utxo(&outpoint, output);
+                if let Err(e) = self.storage.save_utxo(&outpoint, output) {
+                    println!(
+                        "⚠️ Failed to save UTXO {}:{}: {}",
+                        hex::encode(&txid[0..8]),
+                        i,
+                        e
+                    );
+                }
             }
 
             for input in &tx.inputs {
                 if !input.is_coinbase() {
-                    let _ = self.storage.delete_utxo(&input.outpoint());
+                    if let Err(e) = self.storage.delete_utxo(&input.outpoint()) {
+                        println!(
+                            "⚠️ Failed to delete UTXO {}: {}",
+                            hex::encode(&input.outpoint().0[0..8]),
+                            e
+                        );
+                    }
                 }
             }
         }
     }
 
-    fn process_epoch_end(&mut self) {
+    // ------------------------------------------------------------------
+    // Epoch end
+    // ------------------------------------------------------------------
+
+    fn current_epoch_reward(&self) -> u64 {
+        let blocks_per_year = EPOCH_BLOCKS.saturating_mul(365);
+        let year = (self.height / blocks_per_year.max(1)) + 1;
+        match year {
+            1 => EPOCH_REWARD_YEAR_1,
+            2 => EPOCH_REWARD_YEAR_2,
+            3 => EPOCH_REWARD_YEAR_3,
+            4 => EPOCH_REWARD_YEAR_4,
+            _ => EPOCH_REWARD_YEAR_5_PLUS,
+        }
+    }
+
+    pub fn process_epoch_end(&mut self) -> Result<(), String> {
         println!("\n📅 Processing epoch {} end...", self.epoch);
 
-        // Сохраняем номер завершённой эпохи
         let completed_epoch = self.epoch;
+                // Marker: epoch is being closed. If the node crashes, load_state
+                // will see this marker on restart and will not pay rewards twice.
+        let _ = self.storage.save_state("epoch_processing", &completed_epoch);
 
-        // Рассчитываем PoCI и награды
-                // Рассчитываем PoCI и награды
-                let mut poci_results = calculate_poci(&self.miners, &self.bonds, &self.loyalty, self.height);
+        match self.process_pending_slashes() {
+            Ok(0) => {}
+            Ok(n) => println!("   ⚖️ Executed {} slash(es) this epoch", n),
+            Err(e) => println!("   ⚠️ Slashing failed: {}", e),
+        }
 
-                // Проверка MAX_SUPPLY: обрезаем награды, если эмиссия превысит лимит
-                let total_requested: u128 = poci_results.iter().map(|r| r.reward as u128).sum();
-                let available: u128 = if self.total_emitted >= MAX_SUPPLY_LYT {
-                    0
-                } else {
-                    (MAX_SUPPLY_LYT - self.total_emitted) as u128
-                };
-        
-                if total_requested > available {
-                    println!(
-                        "⚠️ Epoch reward {} LYT exceeds available supply {} LYT — trimming",
-                        total_requested, available
-                    );
-        
-                    if available == 0 {
-                        for r in poci_results.iter_mut() {
-                            r.reward = 0;
-                        }
+        let mut poci_results =
+            calculate_poci(&self.miners, &self.bonds, &self.loyalty, self.height);
+
+        let epoch_reward = self.current_epoch_reward();
+        let year = (self.height / (EPOCH_BLOCKS.saturating_mul(365)).max(1)) + 1;
+        println!(
+            "   📆 Year {} — epoch reward: {} LYT ({} ACM)",
+            year,
+            epoch_reward,
+            epoch_reward / LYATORS_PER_ACM
+        );
+
+        let available: u64 = if self.total_emitted >= MAX_SUPPLY_LYT {
+            0
+        } else {
+            MAX_SUPPLY_LYT - self.total_emitted
+        };
+        let effective_epoch_reward = epoch_reward.min(available);
+        if effective_epoch_reward < epoch_reward {
+            println!(
+                "   ⚠️ Epoch reward trimmed: {} → {} LYT (supply cap)",
+                epoch_reward, effective_epoch_reward
+            );
+        }
+
+        let treasury_cut = effective_epoch_reward.saturating_mul(TREASURY_FRACTION_BPS) / 10_000;
+        let miners_pool = effective_epoch_reward.saturating_sub(treasury_cut);
+
+        println!(
+            "   🏦 Treasury (7%): {} LYT | Miners pool: {} LYT",
+            treasury_cut, miners_pool
+        );
+
+        if treasury_cut > 0 {
+            match TxOut::create_p2pkh(TREASURY_ADDRESS) {
+                Ok(mut txout) => {
+                    txout.value = treasury_cut;
+                    let mut hasher = Sha256::new();
+                    hasher.update(b"ACCUM-TREASURY");
+                    hasher.update(completed_epoch.to_le_bytes());
+                    let txid: Txid = hasher.finalize().into();
+                    let outpoint = (txid, 0u32);
+                    if let Err(e) = self.storage.save_utxo(&outpoint, &txout) {
+                        println!("   ⚠️ Failed to save treasury UTXO: {}", e);
                     } else {
-                        for r in poci_results.iter_mut() {
-                            let trimmed = (r.reward as u128 * available) / total_requested;
-                            r.reward = trimmed as u64;
-                        }
+                        println!("   🏦 Treasury UTXO created");
                     }
                 }
-        
-                let mut total_rewards = 0u64;
-                let mut rewarded_miners = 0u32;
-        
-                for result in &poci_results {
+                Err(e) => println!("   ⚠️ Treasury output failed: {}", e),
+            }
+        }
+
+        let total_poci: u128 = poci_results.iter().map(|r| r.poci as u128).sum();
+        if total_poci == 0 {
+            println!("   ⚠️ Total PoCI is 0 — no rewards to distribute");
+        } else {
+            for r in poci_results.iter_mut() {
+                let reward_u128 = (r.poci as u128 * miners_pool as u128) / total_poci;
+                r.reward = u64::try_from(reward_u128).unwrap_or(u64::MAX);
+            }
+        }
+
+        Self::trim_rewards_to_max_supply(&mut poci_results, self.total_emitted);
+
+        let (total_rewards, rewarded_miners) = self.pay_epoch_rewards(&poci_results);
+
+        println!("   Total epoch rewards: {} LYT", total_rewards);
+        println!("   Rewarded miners: {}", rewarded_miners);
+
+        let previous_commit_hash: Hash32 = self
+            .storage
+            .get_state::<Hash32>(&format!(
+                "epoch_commit_root_{}",
+                completed_epoch.saturating_sub(1)
+            ))
+            .ok()
+            .flatten()
+            .unwrap_or([0u8; 32]);
+
+        self.save_epoch_commit(completed_epoch, previous_commit_hash);
+
+        self.share_pool.new_epoch();
+        self.epoch = self.epoch.saturating_add(1);
+
+        self.update_loyalty_for_epoch(completed_epoch, &poci_results);
+        self.reset_miner_shares();
+
+        self.total_emitted = self
+            .total_emitted
+            .saturating_add(total_rewards)
+            .saturating_add(treasury_cut);
+        let _ = self
+            .storage
+            .save_state("total_emitted", &self.total_emitted);
+        if let Err(e) = self.storage.save_state("epoch", &self.epoch) {
+            println!("   ⚠️ Failed to save epoch: {}", e);
+        }
+
+        println!("✅ Epoch {} completed", completed_epoch);
+        println!("🚀 Epoch {} started", self.epoch);
+
+        // Remove marker — epoch closed successfully.
+        let _ = self.storage.delete_state("epoch_processing");
+
+        Ok(())
+    }
+
+    fn trim_rewards_to_max_supply(results: &mut [PoCIResult], total_emitted: u64) {
+        let total_requested: u128 = results.iter().map(|r| r.reward as u128).sum();
+        let available: u128 = if total_emitted >= MAX_SUPPLY_LYT {
+            0
+        } else {
+            (MAX_SUPPLY_LYT - total_emitted) as u128
+        };
+
+        if total_requested <= available {
+            return;
+        }
+
+        println!(
+            "⚠️ Epoch reward {} LYT exceeds available supply {} LYT — trimming",
+            total_requested, available
+        );
+
+        if available == 0 {
+            for r in results.iter_mut() {
+                r.reward = 0;
+            }
+            return;
+        }
+
+        for r in results.iter_mut() {
+            r.reward = ((r.reward as u128 * available) / total_requested) as u64;
+        }
+    }
+
+    fn pay_epoch_rewards(&mut self, results: &[PoCIResult]) -> (u64, u32) {
+        let mut total_rewards = 0u64;
+        let mut rewarded_miners = 0u32;
+
+        for result in results {
             if result.reward == 0 {
                 continue;
             }
@@ -1190,72 +1941,66 @@ impl Node {
             total_rewards = total_rewards.saturating_add(result.reward);
             rewarded_miners += 1;
 
-            // ✅ Генерируем детерминированный txid через SHA-256
-            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(b"ACCUM-EPOCH-REWARD");
-            hasher.update(&self.height.to_le_bytes());
-            hasher.update(&completed_epoch.to_le_bytes());
+            hasher.update(self.height.to_le_bytes());
+            hasher.update(self.epoch.to_le_bytes());
             hasher.update(&result.miner_id);
-            let txid: [u8; 32] = hasher.finalize().into();
+            let txid: Txid = hasher.finalize().into();
 
-            // Выплата награды
-            if result.miner_id == self.miner_id {
-                // Награда себе
-                if let Some(wallet) = &self.wallet {
-                    match TxOut::create_p2pkh(&wallet.address) {
-                        Ok(mut txout) => {
-                            txout.value = result.reward;
-                            let outpoint = (txid, 0u32);
-
-                            match self.storage.save_utxo(&outpoint, &txout) {
-                                Ok(_) => {
-                                    println!(
-                                        "   💰 Reward to self: {} LYT (shares={}, poci={:.4})",
-                                        result.reward, result.shares, result.poci
-                                    );
-                                }
-                                Err(e) => {
-                                    println!("   ❌ Failed to save reward UTXO: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            println!("   ❌ Failed to create reward output: {}", e);
-                        }
-                    }
-                } else {
-                    println!(
-                        "   ⚠️ Local miner has no wallet; reward {} LYT was not created as UTXO",
-                        result.reward
-                    );
+            let (payout_addr, is_local) = if result.miner_id == self.miner_id {
+                match &self.wallet {
+                    Some(w) => (Some(w.address.clone()), true),
+                    None => (None, true),
                 }
             } else {
-                // Награда другому майнеру
-                if let Some(miner) = self.miners.get(&result.miner_id) {
-                    if let Some(ref payout_addr) = miner.payout_address {
-                        match TxOut::create_p2pkh(payout_addr) {
-                            Ok(mut txout) => {
-                                txout.value = result.reward;
-                                let outpoint = (txid, 0u32);
+                match self.miners.get(&result.miner_id) {
+                    Some(m) => (m.payout_address.clone(), false),
+                    None => {
+                        println!(
+                            "   ⚠️ Miner {}... not found in local state",
+                            hex::encode(&result.miner_id[0..6])
+                        );
+                        (None, false)
+                    }
+                }
+            };
 
-                                match self.storage.save_utxo(&outpoint, &txout) {
-                                    Ok(_) => {
-                                        println!(
-                                            "   💰 Reward to {}...: {} LYT",
-                                            hex::encode(&result.miner_id[0..6]),
-                                            result.reward
-                                        );
-                                    }
-                                    Err(e) => {
-                                        println!("   ❌ Failed to save reward UTXO: {}", e);
-                                    }
+            match payout_addr {
+                Some(addr) => match TxOut::create_p2pkh(&addr) {
+                    Ok(mut txout) => {
+                        txout.value = result.reward;
+                        let outpoint = (txid, 0u32);
+                        match self.storage.save_utxo(&outpoint, &txout) {
+                            Ok(_) => {
+                                if is_local {
+                                    println!(
+                                        "   💰 Reward to self: {} LYT (shares={}, poci={})",
+                                        result.reward, result.shares, result.poci
+                                    );
+                                } else {
+                                    println!(
+                                        "   💰 Reward to {}...: {} LYT",
+                                        hex::encode(&result.miner_id[0..6]),
+                                        result.reward
+                                    );
                                 }
                             }
                             Err(e) => {
-                                println!("   ❌ Failed to create reward output: {}", e);
+                                println!("   ❌ Failed to save reward UTXO: {}", e);
                             }
                         }
+                    }
+                    Err(e) => {
+                        println!("   ❌ Failed to create reward output: {}", e);
+                    }
+                },
+                None => {
+                    if is_local {
+                        println!(
+                            "   ⚠️ Local miner has no wallet; reward {} LYT was not created",
+                            result.reward
+                        );
                     } else {
                         println!(
                             "   ⚠️ Miner {}... has no payout address, reward {} LYT lost",
@@ -1263,18 +2008,11 @@ impl Node {
                             result.reward
                         );
                     }
-                } else {
-                    println!(
-                        "   ⚠️ Miner {}... not found in local state",
-                        hex::encode(&result.miner_id[0..6])
-                    );
                 }
             }
 
-            // Обновляем статистику майнера
             if let Some(miner) = self.miners.get_mut(&result.miner_id) {
                 miner.total_rewards = miner.total_rewards.saturating_add(result.reward);
-
                 if let Err(e) = self.storage.save_miner(&result.miner_id, miner) {
                     println!(
                         "   ⚠️ Failed to save miner {}: {}",
@@ -1285,26 +2023,50 @@ impl Node {
             }
         }
 
-        println!("   Total epoch rewards: {} LYT", total_rewards);
-        println!("   Rewarded miners: {}", rewarded_miners);
+        (total_rewards, rewarded_miners)
+    }
 
-        // ========================================
-        // ЗАВЕРШАЕМ ЭПОХУ
-        // ========================================
+    fn save_epoch_commit(&mut self, completed_epoch: u32, previous_commit_hash: Hash32) -> Hash32 {
+        let epoch_commit = self.build_epoch_commit(completed_epoch, previous_commit_hash);
+        let commit_hash = epoch_commit.hash();
 
-        self.share_pool.new_epoch();
+        if let Err(e) = self
+            .storage
+            .save_state(&format!("epoch_commit_{}", completed_epoch), &epoch_commit)
+        {
+            println!("   ⚠️ Failed to save epoch commit: {}", e);
+        }
+        if let Err(e) = self.storage.save_state(
+            &format!("epoch_commit_root_{}", completed_epoch),
+            &commit_hash,
+        ) {
+            println!("   ⚠️ Failed to save epoch commit root: {}", e);
+        }
 
-        // ⚠️ ВАЖНО: увеличиваем эпоху ПОСЛЕ использования completed_epoch
-        self.epoch = self.epoch.saturating_add(1);
+        println!(
+            "   🔐 Epoch commit #{}: hash={}... shares={} miners={}",
+            completed_epoch,
+            hex::encode(&commit_hash[0..8]),
+            epoch_commit.total_shares,
+            epoch_commit.miners_count,
+        );
 
-        // ========================================
-        // ОБНОВЛЯЕМ LOYALTY
-        // ========================================
+        if let Some(p2p) = &mut self.p2p {
+            p2p.broadcast(&P2PMessage::EpochCommit {
+                epoch: completed_epoch,
+                commit_root: commit_hash,
+                timestamp: current_timestamp(),
+            });
+        }
 
-        let miners_to_update: Vec<MinerId> = self.miners.keys().copied().collect();
+        commit_hash
+    }
 
-        for miner_id in miners_to_update {
-            let participated = poci_results
+    fn update_loyalty_for_epoch(&mut self, completed_epoch: u32, results: &[PoCIResult]) {
+        let miner_ids: Vec<MinerId> = self.miners.keys().copied().collect();
+
+        for miner_id in miner_ids {
+            let participated = results
                 .iter()
                 .any(|r| r.miner_id == miner_id && r.shares > 0);
 
@@ -1312,12 +2074,9 @@ impl Node {
                 .loyalty
                 .entry(miner_id)
                 .or_insert_with(LoyaltyData::new);
-
-            // ✅ Используем completed_epoch, а не новую эпоху
             loyalty.update(completed_epoch, participated);
 
             let key = format!("loyalty_{}", hex::encode(&miner_id));
-
             if let Err(e) = self.storage.save_state(&key, loyalty) {
                 println!(
                     "   ⚠️ Failed to save loyalty for {}: {}",
@@ -1326,14 +2085,11 @@ impl Node {
                 );
             }
         }
+    }
 
-        // ========================================
-        // ОБНУЛЯЕМ SHARES
-        // ========================================
-
+    fn reset_miner_shares(&mut self) {
         for miner in self.miners.values_mut() {
             miner.shares = 0;
-
             if let Err(e) = self.storage.save_miner(&miner.miner_id, miner) {
                 println!(
                     "   ⚠️ Failed to reset shares for {}: {}",
@@ -1342,44 +2098,30 @@ impl Node {
                 );
             }
         }
-
-        // ========================================
-        // СОХРАНЯЕМ НОВУЮ ЭПОХУ
-        // ========================================
-                         // Учёт эмиссии эпохи (после обрезания выше — гарантированно ≤ MAX_SUPPLY)
-                         self.total_emitted = self.total_emitted.saturating_add(total_rewards);
-                         let _ = self.storage.save_state("total_emitted", &self.total_emitted);                       
-        if let Err(e) = self.storage.save_state("epoch", &self.epoch) {
-            println!("   ⚠️ Failed to save epoch: {}", e);
-        }
-
-        println!("✅ Epoch {} completed", completed_epoch);
-        println!("🚀 Epoch {} started", self.epoch);
     }
+
+    // ------------------------------------------------------------------
+    // Checkpoints
+    // ------------------------------------------------------------------
 
     fn create_checkpoint(&mut self) {
         let last_block = match self.last_block() {
-            Some(block) => block.clone(),
+            Some(b) => b.clone(),
             None => return,
         };
 
         let block_hash = last_block.hash(&mut self.argon2);
         let state_root = self.calculate_state_root();
 
-        let (signature, _pubkey) = if let Some(wallet) = &self.wallet {
-            let message = {
-                let mut data = Vec::new();
-                data.extend_from_slice(&self.height.to_le_bytes());
-                data.extend_from_slice(&block_hash);
-                data.extend_from_slice(&state_root);
-                Sha256::digest(&data)
-            };
-            (
-                wallet.sign(&message.into()).ok(),
-                Some(wallet.public_key.clone()),
-            )
+        let signature = if let Some(wallet) = &self.wallet {
+            let mut data = Vec::new();
+            data.extend_from_slice(&self.height.to_le_bytes());
+            data.extend_from_slice(&block_hash);
+            data.extend_from_slice(&state_root);
+            let digest: [u8; 32] = Sha256::digest(&data).into();
+            wallet.sign(&digest).ok()
         } else {
-            (None, None)
+            None
         };
 
         let checkpoint = Checkpoint {
@@ -1392,9 +2134,11 @@ impl Node {
         };
 
         self.checkpoints.push(checkpoint.clone());
-        let _ = self.storage.save_checkpoint(self.height, &checkpoint);
+        if let Err(e) = self.storage.save_checkpoint(self.height, &checkpoint) {
+            println!("⚠️ Failed to save checkpoint: {}", e);
+        }
 
-        if self.checkpoints.len() > self.config.advanced.max_checkpoints {
+        while self.checkpoints.len() > self.config.advanced.max_checkpoints {
             self.checkpoints.remove(0);
         }
 
@@ -1404,21 +2148,47 @@ impl Node {
     fn calculate_state_root(&self) -> Hash32 {
         let mut data = Vec::new();
 
-        for (id, miner) in &self.miners {
-            data.extend_from_slice(id);
+        let mut miner_ids: Vec<&MinerId> = self.miners.keys().collect();
+        miner_ids.sort();
+        for id in &miner_ids {
+            let miner = &self.miners[*id];
+            data.extend_from_slice(*id);
             data.extend_from_slice(&miner.shares.to_le_bytes());
             data.extend_from_slice(&miner.bond.to_le_bytes());
         }
 
-        for (id, bond) in &self.bonds {
-            data.extend_from_slice(id);
+        let mut bond_ids: Vec<&MinerId> = self.bonds.keys().collect();
+        bond_ids.sort();
+        for id in &bond_ids {
+            let bond = &self.bonds[*id];
+            data.extend_from_slice(*id);
             data.extend_from_slice(&bond.amount.to_le_bytes());
             data.extend_from_slice(&bond.lock_until.to_le_bytes());
         }
 
-        let hash = Sha256::digest(&data);
         let mut result = [0u8; 32];
-        result.copy_from_slice(&hash);
+        result.copy_from_slice(&Sha256::digest(&data));
         result
     }
+}
+
+// ============================================================
+// Helper: compute header hash for a given nonce.
+// BlockHeader::to_bytes layout (120 bytes):
+//   [0..4]     version
+//   [4..36]    prev_hash
+//   [36..68]   merkle_root
+//   [68..76]   timestamp
+//   [76..108]  difficulty
+//   [108..116] nonce
+//   [116..120] epoch_index
+// ============================================================
+fn header_with_nonce_hash(
+    header_bytes: &[u8; 120],
+    nonce: u64,
+    argon2: &mut Argon2Cache,
+) -> Hash32 {
+    let mut buf = *header_bytes;
+    buf[108..116].copy_from_slice(&nonce.to_le_bytes());
+    argon2.hash(&buf)
 }
