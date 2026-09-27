@@ -12,7 +12,7 @@ use crate::miner::{LoyaltyData, MinerData, Share, SharePool};
 use crate::network::{AttackDetection, DDoSProtection};
 use crate::p2p::{
     validate_block_coinbase, validate_block_no_double_spend, P2PMessage, P2PNode, SyncManager,
-    SyncStatus,
+    SyncStatus, MAX_BLOCKS_PER_REQUEST,
 };
 use crate::storage::{
     Bond, Checkpoint, ProductionStorage, CF_BONDS, CF_CHECKPOINTS, CF_MINERS, CF_STATE,
@@ -1133,17 +1133,31 @@ impl Node {
                         from_height,
                         max_count,
                     } => {
+                        println!("📥 GetBlocks: from={}, max_count={}", from_height, max_count);
+                        let max_count = max_count.min(MAX_BLOCKS_PER_REQUEST);
                         let mut blocks = Vec::new();
                         let end = from_height.saturating_add(max_count as u64);
                         for h in from_height..end {
-                            if let Ok(Some(block)) = self.storage.get_block(h) {
-                                blocks.push(block);
-                            } else {
-                                break;
+                            match self.storage.get_block(h) {
+                                Ok(Some(block)) => blocks.push(block),
+                                Ok(None) => {
+                                    println!("📥 GetBlocks: block {} not found", h);
+                                    break;
+                                }
+                                Err(e) => {
+                                    println!("📥 GetBlocks: error on {}: {}", h, e);
+                                    break;
+                                }
                             }
                         }
+                        println!("📥 GetBlocks: collected {} blocks", blocks.len());
                         if !blocks.is_empty() {
-                            let _ = peer.send_message(&P2PMessage::Blocks(blocks));
+                            match peer.send_message(&P2PMessage::Blocks(blocks.clone())) {
+                                Ok(()) => println!("📤 Sent {} blocks to peer", blocks.len()),
+                                Err(e) => println!("📤 Failed to send {} blocks: {}", blocks.len(), e),
+                            }
+                        } else {
+                            println!("📥 GetBlocks: no blocks to send");
                         }
                     }
                     P2PMessage::Blocks(blocks) => {
