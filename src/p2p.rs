@@ -456,7 +456,6 @@ impl P2PNode {
                     return Ok(());
                 }
 
-                stream.set_nonblocking(true)?;
                 let mut peer = PeerConnection::new(stream, addr);
 
                 if self.banned_peers.contains(&peer.get_peer_id()) {
@@ -470,7 +469,9 @@ impl P2PNode {
                     best_hash: self.local_best_hash,
                     peer_id: self.local_peer_id,
                 };
-                let _ = peer.send_message(&version_msg);
+                peer.send_message(&version_msg)?;
+
+                peer.stream.set_nonblocking(true)?;
 
                 println!("✅ New peer connected: {}", addr);
                 self.peers.insert(addr, peer);
@@ -555,7 +556,7 @@ impl P2PNode {
         }
 
         let stream = TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5))?;
-        stream.set_nonblocking(true)?;
+        // НЕ ставим nonblocking СРАЗУ — сначала отправим Version на blocking-сокете.
         let mut peer = PeerConnection::new(stream, addr);
 
         let version_msg = P2PMessage::Version {
@@ -565,8 +566,10 @@ impl P2PNode {
             best_hash: self.local_best_hash,
             peer_id: self.local_peer_id,
         };
+        peer.send_message(&version_msg)?; // ← возвращаем ошибку, не игнорируем
 
-        let _ = peer.send_message(&version_msg);
+        // Теперь — nonblocking.
+        peer.stream.set_nonblocking(true)?;
 
         self.peers.insert(addr, peer);
         self.known_peers.insert(addr);
