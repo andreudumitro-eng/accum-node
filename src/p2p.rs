@@ -319,9 +319,12 @@ impl PeerConnection {
                 Ok(Some(msg))
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
+            Err(e) => {
+                println!("🔍 read error: {:?}", e);
+                Err(e)
+            }   // ← закрывает Err(e) => { ... }
+        }       // ← закрывает внешний match
+    }           // ← закрывает функцию receive_message
 
     pub fn send_ping(&mut self) -> Result<(), std::io::Error> {
         let nonce = thread_rng().next_u64();
@@ -512,6 +515,7 @@ impl P2PNode {
                         if e.kind() == std::io::ErrorKind::WouldBlock {
                             break;
                         }
+                        println!("🔍 [{}] process_messages error: {:?}", addr, e);
                         self.ddos_protection.record_failure(*addr);
                         disconnected.push(*addr);
                         break;
