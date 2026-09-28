@@ -623,7 +623,7 @@ impl Node {
         self.cached_difficulty = Some((self.height, adjusted));
         adjusted
     }
-    
+
     pub fn sync_progress(&self) -> f64 {
         let our_height = self.height;
 
@@ -631,7 +631,7 @@ impl Node {
             None => return 1.0,
             Some(p2p) => match p2p.best_peer_height() {
                 None => return 1.0,
-                Some(0) => return if our_height == 0 { 1.0 } else { 0.0 },
+                Some(0) => return 1.0,
                 Some(h) => h,
             },
         };
