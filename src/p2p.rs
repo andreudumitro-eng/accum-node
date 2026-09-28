@@ -131,6 +131,7 @@ pub struct PeerConnection {
     pub peer_id: PeerId,
     pub address: SocketAddr,
     pub stream: TcpStream,
+    pub read_buffer: Vec<u8>,
     pub last_message_time: Timestamp,
     pub last_heartbeat: Timestamp,
     pub last_hour_reset: Timestamp,
@@ -147,7 +148,6 @@ pub struct PeerConnection {
     pub ping_nonce: Option<u64>,
     pub ping_time: Option<u64>,
 }
-
 impl PeerConnection {
     pub fn new(stream: TcpStream, address: SocketAddr) -> Self {
         let now = current_timestamp();
@@ -159,6 +159,7 @@ impl PeerConnection {
             peer_id,
             address,
             stream,
+            read_buffer: Vec::new(),
             last_message_time: now,
             last_heartbeat: now,
             last_hour_reset: now,
@@ -241,90 +242,118 @@ impl PeerConnection {
     }
 
     pub fn receive_message(&mut self) -> Result<Option<P2PMessage>, std::io::Error> {
-        let mut len_buf = [0u8; 4];
+        use std::io::Read;
 
-        match self.stream.read_exact(&mut len_buf) {
-            Ok(()) => {
-                let len = u32::from_le_bytes(len_buf) as usize;
-                if len > MAX_MESSAGE_SIZE {
-                    self.invalid_messages += 1;
-                    self.ban("Message too large");
+        // 1. Читаем всё, что есть, в буфер.
+        let mut chunk = [0u8; 8192];
+        loop {
+            match self.stream.read(&mut chunk) {
+                Ok(0) => {
                     return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "Message too large",
+                        std::io::ErrorKind::UnexpectedEof,
+                        "peer closed connection",
                     ));
                 }
-
-                let mut data = vec![0u8; len];
-                self.stream.read_exact(&mut data)?;
-
-                let msg: P2PMessage = bincode::deserialize(&data).map_err(|e| {
-                    self.invalid_messages += 1;
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                })?;
-
-                let now = current_timestamp();
-
-                if !self.check_rate_limit(now) {
-                    return Ok(None);
+                Ok(n) => {
+                    self.read_buffer.extend_from_slice(&chunk[..n]);
+                    if n < chunk.len() {
+                        break;
+                    }
                 }
-
-                self.messages_received += 1;
-                self.last_message_time = now;
-
-                match &msg {
-                    P2PMessage::Heartbeat(_nonce) => {
-                        self.last_heartbeat = now;
-                        // Pong отправляется в Node::handle_p2p_message.
-                    }
-                    P2PMessage::Pong(nonce) => {
-                        if let Some(ping_nonce) = self.ping_nonce {
-                            if *nonce == ping_nonce {
-                                self.ping_time = Some(now);
-                            }
-                        }
-                        self.last_heartbeat = now;
-                    }
-                    P2PMessage::Version {
-                        height,
-                        best_hash,
-                        version,
-                        peer_id,
-                        ..
-                    } => {
-                        self.peer_id = *peer_id;
-                        self.height = Some(*height);
-                        self.best_hash = Some(*best_hash);
-                        self.version = Some(*version);
-                    
-                        if let Err(e) = self.check_version() {
-                            self.ban(e);
-                            return Ok(None);
-                        }
-                    }
-                    P2PMessage::GetBlocks { max_count, .. } => {
-                        if *max_count > MAX_BLOCKS_PER_REQUEST {
-                            self.ban("Requested too many blocks");
-                            return Ok(None);
-                        }
-                    }
-                    P2PMessage::BanPeer { peer_id, reason } => {
-                        if peer_id == &self.peer_id {
-                            self.ban(reason);
-                        }
-                    }
-                    _ => {}
-                }
-
-                Ok(Some(msg))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(e) => {
-                println!("🔍 read error: {:?}", e);
-                Err(e)
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
             }
         }
+
+        // 2. Пытаемся извлечь одно сообщение из буфера.
+        if self.read_buffer.len() < 4 {
+            return Ok(None);
+        }
+
+        let len = u32::from_le_bytes([
+            self.read_buffer[0],
+            self.read_buffer[1],
+            self.read_buffer[2],
+            self.read_buffer[3],
+        ]) as usize;
+
+        if len > MAX_MESSAGE_SIZE {
+            self.invalid_messages += 1;
+            self.ban("Message too large");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Message too large",
+            ));
+        }
+
+        if self.read_buffer.len() < 4 + len {
+            return Ok(None);
+        }
+
+        // 3. Извлекаем данные и удаляем из буфера.
+        let data: Vec<u8> = self.read_buffer[4..4 + len].to_vec();
+        self.read_buffer.drain(..4 + len);
+
+        // 4. Десериализация.
+        let msg: P2PMessage = bincode::deserialize(&data).map_err(|e| {
+            self.invalid_messages += 1;
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })?;
+
+        let now = current_timestamp();
+
+        if !self.check_rate_limit(now) {
+            return Ok(None);
+        }
+
+        self.messages_received += 1;
+        self.last_message_time = now;
+
+        match &msg {
+            P2PMessage::Heartbeat(_nonce) => {
+                self.last_heartbeat = now;
+            }
+            P2PMessage::Pong(nonce) => {
+                if let Some(ping_nonce) = self.ping_nonce {
+                    if *nonce == ping_nonce {
+                        self.ping_time = Some(now);
+                    }
+                }
+                self.last_heartbeat = now;
+            }
+            P2PMessage::Version {
+                height,
+                best_hash,
+                version,
+                peer_id,
+                ..
+            } => {
+                self.peer_id = *peer_id;
+                self.height = Some(*height);
+                self.best_hash = Some(*best_hash);
+                self.version = Some(*version);
+
+                if let Err(e) = self.check_version() {
+                    self.ban(e);
+                    return Ok(None);
+                }
+            }
+            P2PMessage::GetBlocks { max_count, .. } => {
+                if *max_count > MAX_BLOCKS_PER_REQUEST {
+                    self.ban("Requested too many blocks");
+                    return Ok(None);
+                }
+            }
+            P2PMessage::BanPeer { peer_id, reason } => {
+                if peer_id == &self.peer_id {
+                    self.ban(reason);
+                }
+            }
+            _ => {}
+        }
+
+        Ok(Some(msg))
     }
             
 

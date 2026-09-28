@@ -582,6 +582,26 @@ impl Node {
 
         let slice = &self.timestamps[self.timestamps.len() - window..];
         let current_target = self.last_difficulty();
+
+        // ---- Diagnostic: log retarget window ----
+        {
+            let actual = slice
+                .last()
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(slice.first().copied().unwrap_or(0));
+            let expected = TARGET_BLOCK_TIME * (interval - 1);
+            println!(
+                "⚙️ Retarget at height {} (block {}): window={} blocks, actual={}s, expected={}s, avg={:.2}s",
+                self.height,
+                self.height + 1,
+                window,
+                actual,
+                expected,
+                actual as f64 / (interval - 1) as f64,
+            );
+        }
+
         let adjusted = adjust_difficulty(slice, &current_target);
 
         if adjusted != current_target {
@@ -592,11 +612,18 @@ impl Node {
                 adjusted.to_difficulty(),
                 adjusted.compact(),
             );
+        } else {
+            println!(
+                "⚙️ Retarget result: target unchanged (diff={:.6e}, nbits={:08x})",
+                adjusted.to_difficulty(),
+                adjusted.compact(),
+            );
         }
 
         self.cached_difficulty = Some((self.height, adjusted));
         adjusted
     }
+    
     pub fn sync_progress(&self) -> f64 {
         let our_height = self.height;
 
