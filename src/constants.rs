@@ -73,7 +73,7 @@ pub const RPC_PORT: u16 = 8545;
 pub const SYNC_TIMEOUT_SECS: u64 = 60;
 pub const PEER_TIMEOUT_SECS: u64 = 300;
 pub const STATS_UPDATE_INTERVAL_MS: u64 = 100;
-pub const MINING_BATCH_SIZE: u64 = 10;
+pub const MINING_BATCH_SIZE: u64 = 100_000;
 
 pub const SYNC_BATCH_SIZE: u64 = 500;
 pub const SYNC_MAX_RETRIES: u32 = 3;

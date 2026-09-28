@@ -121,7 +121,7 @@ pub enum P2PMessage {
     Heartbeat(u64),
 }
 
-pub const MAX_MESSAGES_PER_HOUR: u32 = 1000;
+pub const MAX_MESSAGES_PER_HOUR: u32 = 100_000;
 pub const MAX_BLOCKS_PER_REQUEST: u32 = 500;
 pub const MIN_VERSION: u32 = 1;
 pub const MAX_VERSION: u32 = 1;
