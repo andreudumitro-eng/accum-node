@@ -828,16 +828,37 @@ impl SyncManager {
         blocks: &[Block],
         peer_id: &PeerId,
     ) -> Result<Height, String> {
-        if let Some(session) = self.active_session.as_mut() {
+        // Step 1: validate peer and read a snapshot of the session
+        // fields we need, without holding a mutable borrow.
+        let (session_height, session_target) = {
+            let session = self
+                .active_session
+                .as_ref()
+                .ok_or_else(|| "No active sync session".to_string())?;
+
             if session.peer_id != *peer_id {
                 return Err("Wrong peer".to_string());
             }
 
-            if blocks.is_empty() {
+            (session.current_height, session.target_height)
+        };
+
+        // Step 2: empty batch — mark the session as completed and clear it.
+        if blocks.is_empty() {
+            if let Some(session) = self.active_session.as_mut() {
                 session.status = SyncStatus::Completed;
-                self.sync_in_progress = false;
-                return Ok(session.current_height);
             }
+            self.sync_in_progress = false;
+            self.active_session = None;
+            return Ok(session_height);
+        }
+
+        // Step 3: update the session with the new blocks.
+        let new_height = {
+            let session = self
+                .active_session
+                .as_mut()
+                .ok_or_else(|| "No active sync session".to_string())?;
 
             session.blocks_received += blocks.len() as u32;
             session.last_activity = current_timestamp();
@@ -848,44 +869,76 @@ impl SyncManager {
                 .saturating_add(blocks.len() as u64)
                 .min(session.target_height);
 
-            if session.current_height >= session.target_height {
-                session.status = SyncStatus::Completed;
-                self.sync_in_progress = false;
-                println!("✅ Sync completed! Height: {}", session.current_height);
-            } else {
-                session.status = SyncStatus::Requesting;
-            }
+            session.current_height
+        };
 
-            // Успешный приём блоков — сбрасываем счётчик retries.
-            if let Some(peer) = self.peers.get_mut(peer_id) {
-                peer.retries = 0;
-            }
-
-            return Ok(session.current_height);
+        // Step 4: reset the peer's retry counter.
+        if let Some(peer) = self.peers.get_mut(peer_id) {
+            peer.retries = 0;
         }
 
-        Err("No active sync session".to_string())
+        // Step 5: if we reached the target, complete and clear the session.
+        if new_height >= session_target {
+            println!("✅ Sync completed! Height: {}", new_height);
+            if let Some(session) = self.active_session.as_mut() {
+                session.status = SyncStatus::Completed;
+            }
+            self.sync_in_progress = false;
+            self.active_session = None;
+            return Ok(new_height);
+        }
+
+        // Step 6: otherwise continue the session.
+        if let Some(session) = self.active_session.as_mut() {
+            session.status = SyncStatus::Requesting;
+        }
+
+        Ok(new_height)
     }
 
     pub fn check_timeouts(&mut self) -> Option<PeerId> {
         let now = current_timestamp();
 
-        if let Some(session) = self.active_session.as_mut() {
+        // Проверяем, завершена ли сессия — через as_ref(), чтобы
+        // не держать mutable borrow.
+        let is_completed = self
+            .active_session
+            .as_ref()
+            .map(|s| s.status == SyncStatus::Completed)
+            .unwrap_or(false);
+
+        if is_completed {
+            self.active_session = None;
+            return None;
+        }
+
+        // Собираем peer_id таймаутной сессии, потом отпускаем borrow.
+        let timeout_peer = {
+            let session = match self.active_session.as_ref() {
+                Some(s) => s,
+                None => return None,
+            };
             if now.saturating_sub(session.last_activity) > SYNC_TIMEOUT_SECS {
-                println!("⚠️ Sync timeout with peer");
-                session.status = SyncStatus::Failed("Timeout".to_string());
-
-                if let Some(peer) = self.peers.get_mut(&session.peer_id) {
-                    peer.retries += 1;
-                    if peer.retries >= 3 {
-                        peer.banned = true;
-                        println!("🚫 Peer {} banned due to sync failures", peer.address);
-                    }
-                }
-
-                self.sync_in_progress = false;
-                return Some(session.peer_id);
+                Some(session.peer_id)
+            } else {
+                None
             }
+        };
+
+        if let Some(peer_id) = timeout_peer {
+            println!("⚠️ Sync timeout with peer");
+            if let Some(session) = self.active_session.as_mut() {
+                session.status = SyncStatus::Failed("Timeout".to_string());
+            }
+            if let Some(peer) = self.peers.get_mut(&peer_id) {
+                peer.retries += 1;
+                if peer.retries >= 3 {
+                    peer.banned = true;
+                    println!("🚫 Peer {} banned due to sync failures", peer.address);
+                }
+            }
+            self.sync_in_progress = false;
+            return Some(peer_id);
         }
 
         None

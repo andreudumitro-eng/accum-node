@@ -419,7 +419,7 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
         let node = node_arc.read();
         println!("🔗 Height: {}", node.height);
         println!("📅 Epoch: {}", node.epoch);
-        println!("👤 Miner ID: {}...", hex::encode(&node.miner_id[0..8]));
+        println!("😎 Miner ID: {}...", hex::encode(&node.miner_id[0..8]));
         println!(
             "💳 Address: {}",
             node.wallet
@@ -447,6 +447,7 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
     let node_for_loop = node_arc.clone();
     std::thread::spawn(move || {
         println!("🚀 Node loop starting...");
+        let mut last_backup_height: u64 = u64::MAX;
         loop {
             if should_shutdown() {
                 println!("\n⏳ Shutting down (node loop)...");
@@ -462,12 +463,16 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                 }
             }
 
-            // Backup outside the write-lock.
+            // Backup only when height changed.
             {
                 let node = node_for_loop.read();
-                let _ = node
-                    .storage
-                    .maybe_backup(node.height, node.config.advanced.backup_interval_blocks);
+                if node.height != last_backup_height {
+                    let _ = node.storage.maybe_backup(
+                        node.height,
+                        node.config.advanced.backup_interval_blocks,
+                    );
+                    last_backup_height = node.height;
+                }
             }
 
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -490,17 +495,7 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
     //     batch", NOT "we found a block". Finding a block or a share is
     //     reported inside `mine_block` itself.
     //
-    //   - The write-lock is held for the entire batch. With
-    //     MINING_BATCH_SIZE = 1000 and 8 threads this is ~125 ms — tolerable
-    //     for now, but see the TODO below.
-    //
     // TODO (long-term): refactor to snapshot + apply.
-    //   1. Under read-lock: copy header, prev_hash, difficulty, targets.
-    //   2. Release lock, mine in a thread pool WITHOUT the lock.
-    //   3. If a block is found, re-acquire write-lock and verify
-    //      `self.last_hash() == header.prev_hash`. If it still matches,
-    //      apply; otherwise drop (someone beat us to it).
-    //   This removes the write-lock from the hashing hot path entirely.
     if config.mining.enabled {
         let node_for_miner = node_arc.clone();
         std::thread::spawn(move || {
@@ -511,7 +506,6 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                     break;
                 }
 
-                // Take write-lock ONCE. Check and mine under the same lock.
                 let attempted = {
                     let mut node = node_for_miner.write();
 
@@ -526,14 +520,11 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                     } else {
                         false
                     }
-                }; // write-lock released here
+                };
 
                 if !attempted {
-                    // Not ready — wait a bit and re-check.
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 } else {
-                    // Mining batch finished quickly. Yield to other threads
-                    // (tick / RPC / P2P) before taking the write-lock again.
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
             }
@@ -545,7 +536,6 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
     println!("\n⚠️  Received Ctrl+C");
     SHUTDOWN.store(true, AtomicOrdering::SeqCst);
 
-    // Give threads time to save state.
     tokio::time::sleep(Duration::from_secs(3)).await;
     println!("👋 Goodbye!");
     std::process::exit(0);

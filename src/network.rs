@@ -154,6 +154,15 @@ impl DDoSProtection {
         }
     }
 
+    /// Check the rate limit for a peer.
+    ///
+    /// Returns `true` if the message is allowed, `false` otherwise.
+    ///
+    /// NOTE: this function NEVER inserts into `ip_blacklist`. A rate limit
+    /// violation is transient — the peer simply gets its message rejected
+    /// and can retry later. Permanent blacklisting is only done by
+    /// `blacklist_ip()`, called explicitly by the operator or by an
+    /// attack-detection subsystem.
     pub fn check_rate_limit(&mut self, addr: SocketAddr) -> bool {
         let now = current_timestamp();
 
@@ -186,11 +195,14 @@ impl DDoSProtection {
         limit.minute_requests += 1;
         self.global_request_count += 1;
 
-        let max_per_hour = if self.attack_mode { 100 } else { 1000 };
-        let max_per_minute = if self.attack_mode { 10 } else { 100 };
+        // Generous limits: sync traffic (GetBlocks every 2 s) plus
+        // ping/pong and heartbeat can easily reach a few hundred
+        // messages per minute during normal operation.
+        let max_per_hour = if self.attack_mode { 10_000 } else { 100_000 };
+        let max_per_minute = if self.attack_mode { 1_000 } else { 10_000 };
 
         if limit.requests > max_per_hour || limit.minute_requests > max_per_minute {
-            self.ip_blacklist.insert(addr);
+            // Do NOT blacklist permanently — just reject this message.
             return false;
         }
 
@@ -228,11 +240,20 @@ impl DDoSProtection {
         true
     }
 
+    /// Record a transient failure for a peer.
+    ///
+    /// NOTE: this does NOT blacklist the peer. Transient I/O failures are
+    /// normal in P2P networking (peer restarts, network hiccups, etc.).
+    /// Permanent blacklisting is only done by `blacklist_ip()`.
     pub fn record_failure(&mut self, addr: SocketAddr) {
         if let Some(limit) = self.connection_limits.get_mut(&addr) {
             limit.failures += 1;
-            if limit.failures > 10 {
-                self.ip_blacklist.insert(addr);
+            // Only log at very high thresholds; do not blacklist.
+            if limit.failures % 1000 == 0 {
+                println!(
+                    "⚠️ Peer {} has {} transient failures (not blacklisted)",
+                    addr, limit.failures
+                );
             }
         }
     }
