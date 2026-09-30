@@ -119,6 +119,13 @@ pub enum P2PMessage {
     },
     SyncResponse(Vec<Block>),
     Heartbeat(u64),
+    RegisterMiner {
+        miner_id: MinerId,
+        payout_address: String,
+        pubkey: Vec<u8>,
+        signature: Vec<u8>,
+        timestamp: Timestamp,
+    },
 }
 
 pub const MAX_MESSAGES_PER_HOUR: u32 = 100_000;
@@ -213,7 +220,6 @@ impl PeerConnection {
     }
 
     pub fn send_message(&mut self, msg: &P2PMessage) -> Result<(), std::io::Error> {
-        // NOTE: не блокируем отправку BanPeer — иначе бан не дойдёт до пира.
         if self.banned {
             if !matches!(msg, P2PMessage::BanPeer { .. }) {
                 return Ok(());
@@ -244,7 +250,6 @@ impl PeerConnection {
     pub fn receive_message(&mut self) -> Result<Option<P2PMessage>, std::io::Error> {
         use std::io::Read;
 
-        // 1. Читаем всё, что есть, в буфер.
         let mut chunk = [0u8; 8192];
         loop {
             match self.stream.read(&mut chunk) {
@@ -266,7 +271,6 @@ impl PeerConnection {
             }
         }
 
-        // 2. Пытаемся извлечь одно сообщение из буфера.
         if self.read_buffer.len() < 4 {
             return Ok(None);
         }
@@ -291,11 +295,9 @@ impl PeerConnection {
             return Ok(None);
         }
 
-        // 3. Извлекаем данные и удаляем из буфера.
         let data: Vec<u8> = self.read_buffer[4..4 + len].to_vec();
         self.read_buffer.drain(..4 + len);
 
-        // 4. Десериализация.
         let msg: P2PMessage = bincode::deserialize(&data).map_err(|e| {
             self.invalid_messages += 1;
             std::io::Error::new(std::io::ErrorKind::InvalidData, e)
@@ -355,7 +357,6 @@ impl PeerConnection {
 
         Ok(Some(msg))
     }
-            
 
     pub fn send_ping(&mut self) -> Result<(), std::io::Error> {
         let nonce = thread_rng().next_u64();
@@ -368,7 +369,6 @@ impl PeerConnection {
         self.best_hash = Some(hash);
     }
 
-    /// Баним пира и шлём BanPeer до установки флага, чтобы send_message не заблокировал отправку.
     pub fn ban(&mut self, reason: &str) {
         if self.banned {
             return;
@@ -514,9 +514,6 @@ impl P2PNode {
         Ok(())
     }
 
-    /// Reads messages from all peers and returns them to the caller.
-    /// Does NOT handle messages itself — handling happens in
-    /// Node::tick under the write-lock.
     pub fn process_messages(&mut self) -> Result<Vec<(P2PMessage, SocketAddr)>, std::io::Error> {
         let now = current_timestamp();
         let mut disconnected = Vec::new();
@@ -587,7 +584,6 @@ impl P2PNode {
         }
 
         let stream = TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5))?;
-        // НЕ ставим nonblocking СРАЗУ — сначала отправим Version на blocking-сокете.
         let mut peer = PeerConnection::new(stream, addr);
 
         let version_msg = P2PMessage::Version {
@@ -597,9 +593,8 @@ impl P2PNode {
             best_hash: self.local_best_hash,
             peer_id: self.local_peer_id,
         };
-        peer.send_message(&version_msg)?; // ← возвращаем ошибку, не игнорируем
+        peer.send_message(&version_msg)?;
 
-        // Теперь — nonblocking.
         peer.stream.set_nonblocking(true)?;
 
         self.peers.insert(addr, peer);
@@ -690,9 +685,11 @@ pub enum SyncStatus {
 pub struct SyncManager {
     pub peers: HashMap<PeerId, SyncPeer>,
     pub active_session: Option<SyncSession>,
-    /// DEPRECATED: source of truth is Node::blocks. Kept for compatibility.
+    /// DEPRECATED: source of truth is Node::blocks. Оставлено для совместимости.
+    #[allow(dead_code)]
     pub local_chain: Vec<BlockHeader>,
-    /// DEPRECATED: source of truth is Node::block_hashes. Kept for compatibility.
+    /// DEPRECATED: source of truth is Node::block_hashes. Оставлено для совместимости.
+    #[allow(dead_code)]
     pub local_hashes: HashMap<Hash32, Height>,
     /// Local chain height — updated from Node::height.
     pub local_height: Height,
@@ -828,8 +825,6 @@ impl SyncManager {
         blocks: &[Block],
         peer_id: &PeerId,
     ) -> Result<Height, String> {
-        // Step 1: validate peer and read a snapshot of the session
-        // fields we need, without holding a mutable borrow.
         let (session_height, session_target) = {
             let session = self
                 .active_session
@@ -843,7 +838,6 @@ impl SyncManager {
             (session.current_height, session.target_height)
         };
 
-        // Step 2: empty batch — mark the session as completed and clear it.
         if blocks.is_empty() {
             if let Some(session) = self.active_session.as_mut() {
                 session.status = SyncStatus::Completed;
@@ -853,7 +847,6 @@ impl SyncManager {
             return Ok(session_height);
         }
 
-        // Step 3: update the session with the new blocks.
         let new_height = {
             let session = self
                 .active_session
@@ -872,12 +865,10 @@ impl SyncManager {
             session.current_height
         };
 
-        // Step 4: reset the peer's retry counter.
         if let Some(peer) = self.peers.get_mut(peer_id) {
             peer.retries = 0;
         }
 
-        // Step 5: if we reached the target, complete and clear the session.
         if new_height >= session_target {
             println!("✅ Sync completed! Height: {}", new_height);
             if let Some(session) = self.active_session.as_mut() {
@@ -888,7 +879,6 @@ impl SyncManager {
             return Ok(new_height);
         }
 
-        // Step 6: otherwise continue the session.
         if let Some(session) = self.active_session.as_mut() {
             session.status = SyncStatus::Requesting;
         }
@@ -899,8 +889,6 @@ impl SyncManager {
     pub fn check_timeouts(&mut self) -> Option<PeerId> {
         let now = current_timestamp();
 
-        // Проверяем, завершена ли сессия — через as_ref(), чтобы
-        // не держать mutable borrow.
         let is_completed = self
             .active_session
             .as_ref()
@@ -912,7 +900,6 @@ impl SyncManager {
             return None;
         }
 
-        // Собираем peer_id таймаутной сессии, потом отпускаем borrow.
         let timeout_peer = {
             let session = match self.active_session.as_ref() {
                 Some(s) => s,
@@ -927,9 +914,6 @@ impl SyncManager {
 
         if let Some(peer_id) = timeout_peer {
             println!("⚠️ Sync timeout with peer");
-            if let Some(session) = self.active_session.as_mut() {
-                session.status = SyncStatus::Failed("Timeout".to_string());
-            }
             if let Some(peer) = self.peers.get_mut(&peer_id) {
                 peer.retries += 1;
                 if peer.retries >= 3 {
@@ -937,6 +921,8 @@ impl SyncManager {
                     println!("🚫 Peer {} banned due to sync failures", peer.address);
                 }
             }
+            // Полностью очищаем сессию, иначе sync_progress вернёт мусор.
+            self.active_session = None;
             self.sync_in_progress = false;
             return Some(peer_id);
         }
@@ -957,17 +943,14 @@ impl SyncManager {
             let total = session.target_height.saturating_sub(session.from_height);
             let current = session.current_height.saturating_sub(session.from_height);
             if total > 0 {
-                return current as f64 / total as f64;
+                return (current as f64 / total as f64).min(1.0);
             }
         }
-        self.best_peer_height().map_or(1.0, |best| {
-            let current = self.local_chain.len() as Height;
-            if best > current {
-                current as f64 / best as f64
-            } else {
-                1.0
-            }
-        })
+        let best = match self.best_peer_height() {
+            Some(h) if h > self.local_height => h,
+            _ => return 1.0,
+        };
+        (self.local_height as f64 / best as f64).min(1.0)
     }
 
     pub fn is_syncing(&self) -> bool {
@@ -1025,7 +1008,8 @@ impl SyncManager {
         }
 
         let now = current_timestamp();
-        if now.saturating_sub(self.last_request_time) < 5 && self.sync_in_progress {
+        // Согласовано с интервалом SYNC_REQUEST_INTERVAL_SECS в Node::tick.
+        if now.saturating_sub(self.last_request_time) < 2 && self.sync_in_progress {
             return Err("Too frequent requests".to_string());
         }
 
@@ -1064,8 +1048,6 @@ impl SyncManager {
         })
     }
 
-    /// Проверяет и принимает блоки, полностью обновляя состояние Node.
-    /// Источник истины о высоте — `node.height`, а не `self.local_chain`.
     pub fn verify_and_accept_blocks(
         &mut self,
         blocks: &[Block],
@@ -1076,7 +1058,6 @@ impl SyncManager {
         for (idx, block) in blocks.iter().enumerate() {
             let expected_height = new_height + 1;
 
-            // Предыдущий блок — всегда существует (genesis есть в storage).
             let prev_block = node
                 .storage
                 .get_block(expected_height.saturating_sub(1))?
@@ -1150,7 +1131,6 @@ impl SyncManager {
                 .save_state("height", &expected_height)
                 .map_err(|e| format!("save height: {}", e))?;
 
-            // Epoch transition.
             if expected_height % EPOCH_BLOCKS == 0 {
                 if let Err(e) = node.process_epoch_end() {
                     println!(
@@ -1160,12 +1140,10 @@ impl SyncManager {
                 }
             }
 
-            // Epoch сохраняем после process_epoch_end — epoch мог измениться.
             node.storage
                 .save_state("epoch", &node.epoch)
                 .map_err(|e| format!("save epoch: {}", e))?;
 
-            // Обновляем processed_txids и mempool.
             let mut txids_in_block = HashSet::new();
             for tx in &block.transactions {
                 if !tx.is_coinbase() {
@@ -1179,7 +1157,8 @@ impl SyncManager {
                 !txids_in_block.contains(&txid)
             });
 
-            // Поддерживаем зеркала в SyncManager.
+            // DEPRECATED mirrors — не используются как источник истины,
+            // но оставлены, чтобы не ломать возможные внешние вызовы.
             self.local_chain.push(block.header.clone());
             self.local_hashes.insert(block_hash, expected_height);
 
@@ -1197,6 +1176,11 @@ impl SyncManager {
         node.storage
             .save_mempool(&node.mempool)
             .map_err(|e| format!("save mempool: {}", e))?;
+
+        // ВАЖНО: обновляем собственную высоту внутри SyncManager.
+        // Без этой строки needs_sync() всегда думает, что мы отстаём,
+        // и запускает бесконечные циклы синхронизации.
+        self.local_height = new_height;
 
         Ok(new_height)
     }

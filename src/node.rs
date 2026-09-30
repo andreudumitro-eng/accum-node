@@ -30,6 +30,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use secp256k1::PublicKey;
 
 /// How many recent heights we keep txids in `processed_txids` for dedup.
 const PROCESSED_TXIDS_RETENTION: Height = 1_000;
@@ -71,6 +72,9 @@ pub struct Node {
     pub last_stats_time: Timestamp,
     pub last_sync_request_time: Timestamp,
     pub last_share_time: Timestamp,
+    pub last_reconnect_time: Timestamp,
+    pub last_version_broadcast: Timestamp,
+    pub last_register_broadcast: Timestamp,
     pub cached_difficulty: Option<(Height, Target)>,
 }
 
@@ -134,6 +138,9 @@ impl Node {
             last_stats_time: now,
             last_sync_request_time: 0,
             last_share_time: now,
+            last_reconnect_time: 0,
+            last_version_broadcast: 0,
+            last_register_broadcast: 0,
             cached_difficulty: None,
         };
         println!("🔧 [10] Node struct created");
@@ -180,6 +187,9 @@ impl Node {
                 p2p.set_local_state(height, best_hash);
                 p2p.connect_to_bootnodes();
             }
+        
+            // Broadcast RegisterMiner right after connect.
+            node.broadcast_register_miner();
         }
 
         println!("🔧 [21] Node creation complete!");
@@ -989,6 +999,37 @@ impl Node {
             }
         }
 
+                // 3c. Periodic Version broadcast so peers learn our height.
+                {
+                    let now = current_timestamp();
+                    if now.saturating_sub(self.last_version_broadcast) >= 30 {
+                        if let Some(p2p) = self.p2p.as_mut() {
+                            p2p.broadcast_version();
+                        }
+                        self.last_version_broadcast = now;
+                    }
+                }
+
+                // 3b. Auto-reconnect to bootnodes if we have no peers.
+        // Handles the case where the internet drops and all peers
+        // disconnect — the node tries to reconnect automatically.
+        {
+            let now = current_timestamp();
+            let should_reconnect = self
+                .p2p
+                .as_ref()
+                .map(|p| p.peers.is_empty())
+                .unwrap_or(false);
+
+            if should_reconnect && now.saturating_sub(self.last_reconnect_time) >= 30 {
+                if let Some(p2p) = self.p2p.as_mut() {
+                    println!("🔄 No peers — attempting to reconnect to bootnodes...");
+                    p2p.connect_to_bootnodes();
+                }
+                self.last_reconnect_time = now;
+            }
+        }
+
         // 4. Handle sync timeouts.
         if let Some(p2p) = self.p2p.as_mut() {
             if let Some(_peer_id) = p2p.sync_manager.check_timeouts() {
@@ -1472,6 +1513,74 @@ impl Node {
                     P2PMessage::Heartbeat(nonce) => {
                         let _ = peer.send_message(&P2PMessage::Pong(nonce));
                     }
+                    P2PMessage::RegisterMiner {
+                        miner_id,
+                        payout_address,
+                        pubkey,
+                        signature,
+                        timestamp,
+                    } => {
+                        // 1. Reject if the timestamp is older than 300 seconds.
+                        let now = current_timestamp();
+                        if now.saturating_sub(timestamp) > 300 {
+                            println!("⚠️ RegisterMiner: timestamp too old");
+                            return;
+                        }
+
+                        // 2. Validate pubkey and check miner_id.
+                        let pk = match PublicKey::from_slice(&pubkey) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                println!("⚠️ RegisterMiner: invalid pubkey: {}", e);
+                                return;
+                            }
+                        };
+                        let expected_miner_id = Wallet::miner_id_from_pubkey(&pk);
+                        if expected_miner_id != miner_id {
+                            println!("⚠️ RegisterMiner: miner_id mismatch with pubkey");
+                            return;
+                        }
+
+                        // 3. Verify signature.
+                        let mut msg = Vec::new();
+                        msg.extend_from_slice(&miner_id);
+                        msg.extend_from_slice(payout_address.as_bytes());
+                        msg.extend_from_slice(&timestamp.to_le_bytes());
+                        let digest: [u8; 32] = Sha256::digest(&msg).into();
+
+                        if !Wallet::verify_signature(&pubkey, &signature, &digest) {
+                            println!("⚠️ RegisterMiner: invalid signature");
+                            return;
+                        }
+
+                        // 4. Validate payout address.
+                        if TxOut::create_p2pkh(&payout_address).is_err() {
+                            println!(
+                                "⚠️ RegisterMiner: invalid payout address for {}",
+                                hex::encode(&miner_id[0..8])
+                            );
+                            return;
+                        }
+
+                        // 5. Persist into miners map and storage.
+
+                        // 6. Persist into miners map and storage.
+                        let entry = self.miners.entry(miner_id).or_insert_with(|| {
+                            MinerData::new(miner_id, 0, self.epoch, now)
+                        });
+                        entry.pubkey = pubkey.clone();
+                        entry.payout_address = Some(payout_address.clone());
+
+                        if let Err(e) = self.storage.save_miner(&miner_id, entry) {
+                            println!("⚠️ RegisterMiner: failed to save miner: {}", e);
+                        } else {
+                            println!(
+                                "📝 RegisterMiner: {} -> {}",
+                                hex::encode(&miner_id[0..8]),
+                                payout_address
+                            );
+                        }
+                    }
                 }
             }
 
@@ -1484,6 +1593,44 @@ impl Node {
             println!("✅ State saved");
         }
     }
+    
+        /// Broadcast RegisterMiner — our miner_id + payout address.
+        pub fn broadcast_register_miner(&mut self) {
+            let wallet = match &self.wallet {
+                Some(w) => w,
+                None => return,
+            };
+    
+            let timestamp = current_timestamp();
+    
+            // Signed message: sha256(miner_id || payout_address || timestamp_le).
+            let mut msg = Vec::new();
+            msg.extend_from_slice(&wallet.miner_id);
+            msg.extend_from_slice(wallet.address.as_bytes());
+            msg.extend_from_slice(&timestamp.to_le_bytes());
+            let digest: [u8; 32] = Sha256::digest(&msg).into();
+    
+            let signature = match wallet.sign(&digest) {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("⚠️ RegisterMiner: cannot sign: {}", e);
+                    return;
+                }
+            };
+    
+            let msg = P2PMessage::RegisterMiner {
+                miner_id: wallet.miner_id,
+                payout_address: wallet.address.clone(),
+                pubkey: wallet.public_key.clone(),
+                signature,
+                timestamp,
+            };
+    
+            if let Some(p2p) = &mut self.p2p {
+                p2p.broadcast(&msg);
+                println!("📝 Broadcast RegisterMiner ({})", wallet.address);
+            }
+        }
 
     // ------------------------------------------------------------------
     // Mining
