@@ -511,10 +511,24 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
 
                     let peers = node.p2p.as_ref().map(|p| p.peer_count()).unwrap_or(0);
                     let is_syncing = node.p2p.as_ref().map(|p| p.is_syncing()).unwrap_or(false);
-                    let synced = node.sync_progress() >= 0.99;
+
+                    // Gate: mine only when we are not in active sync
+                    // and not too far behind the best peer.
+                    // `behind <= 2` allows both nodes in a small network
+                    // to mine concurrently. The old `synced >= 0.99` gate
+                    // would prevent the slower node from ever catching up.
+                    let our_height = node.height;
+                    let best_peer = node
+                        .p2p
+                        .as_ref()
+                        .and_then(|p| p.best_peer_height())
+                        .unwrap_or(our_height);
+                    let behind = best_peer.saturating_sub(our_height);
+                    let not_too_far_behind = behind <= 2;
+
                     let solo_ok = peers > 0 || genesis_mode;
 
-                    if !is_syncing && synced && solo_ok {
+                    if !is_syncing && not_too_far_behind && solo_ok {
                         node.mine_block();
                         true
                     } else {
@@ -537,6 +551,6 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
     SHUTDOWN.store(true, AtomicOrdering::SeqCst);
 
     tokio::time::sleep(Duration::from_secs(3)).await;
-    println!("👋 Goodbye!");
+    println!("🙋 Goodbye!");
     std::process::exit(0);
 }
