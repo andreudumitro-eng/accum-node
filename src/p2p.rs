@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::Ordering; 
 
 /// Проверка coinbase: сумма выходов coinbase ≤ block_reward + сумма fees.
 pub fn validate_block_coinbase(block: &Block, storage: &ProductionStorage) -> Result<(), String> {
@@ -1127,10 +1128,17 @@ impl SyncManager {
             node.height = expected_height;
             node.cached_difficulty = None;
 
+            // Signal the mining thread: chain has moved.
+            // Must be done for EVERY accepted block (not once at the end),
+            // because a later block in the batch may fail validation and
+            // return Err before the outer caller gets a chance to signal.
+            node.chain_generation.fetch_add(1, Ordering::Relaxed);
+            node.abort_mining.store(true, Ordering::Relaxed);
+
             node.storage
                 .save_state("height", &expected_height)
                 .map_err(|e| format!("save height: {}", e))?;
-
+                
             if expected_height % EPOCH_BLOCKS == 0 {
                 if let Err(e) = node.process_epoch_end() {
                     println!(

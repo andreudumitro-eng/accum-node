@@ -38,6 +38,20 @@ const PROCESSED_TXIDS_RETENTION: Height = 1_000;
 /// Genesis emission (LYT).
 const GENESIS_SUPPLY_LYT: u64 = 500_000_000;
 
+/// Drop-guard: restores `sync_manager` into `node.p2p` even on panic.
+struct SyncManagerRestore<'a> {
+    node: &'a mut Node,
+    sync_manager: Option<SyncManager>,
+}
+
+impl<'a> Drop for SyncManagerRestore<'a> {
+    fn drop(&mut self) {
+        if let (Some(p2p), Some(sm)) = (self.node.p2p.as_mut(), self.sync_manager.take()) {
+            p2p.sync_manager = sm;
+        }
+    }
+}
+
 pub struct Node {
     pub height: Height,
     pub epoch: u32,
@@ -76,6 +90,14 @@ pub struct Node {
     pub last_version_broadcast: Timestamp,
     pub last_register_broadcast: Timestamp,
     pub cached_difficulty: Option<(Height, Target)>,
+
+    /// Set to `true` when a new block is accepted, so the mining
+    /// thread can abort its current batch ASAP.
+    pub abort_mining: Arc<AtomicBool>,
+
+    /// Monotonic counter of chain version.
+    /// Incremented whenever the tip changes.
+    pub chain_generation: Arc<AtomicU64>,
 }
 
 impl Node {
@@ -142,6 +164,8 @@ impl Node {
             last_version_broadcast: 0,
             last_register_broadcast: 0,
             cached_difficulty: None,
+            abort_mining: Arc::new(AtomicBool::new(false)),
+            chain_generation: Arc::new(AtomicU64::new(0)),
         };
         println!("🔧 [10] Node struct created");
 
@@ -1030,6 +1054,15 @@ impl Node {
             }
         }
 
+                // 3d. Periodic RegisterMiner broadcast every 60 seconds.
+                {
+                    let now = current_timestamp();
+                    if now.saturating_sub(self.last_register_broadcast) >= 60 {
+                        self.broadcast_register_miner();
+                        self.last_register_broadcast = now;
+                    }
+                }
+
         // 4. Handle sync timeouts.
         if let Some(p2p) = self.p2p.as_mut() {
             if let Some(_peer_id) = p2p.sync_manager.check_timeouts() {
@@ -1230,24 +1263,28 @@ impl Node {
                     }
                     P2PMessage::Blocks(blocks) => {
                         let peer_id = peer.get_peer_id();
-        
+                    
                         // Temporary take sync_manager out to avoid double mutable borrow.
-                        let mut sync_manager = self
-                            .p2p
-                            .as_mut()
-                            .map(|p| std::mem::replace(&mut p.sync_manager, SyncManager::new()))
-                            .unwrap();
-        
+                        // Use a drop-guard so that even if verify_and_accept_blocks panics,
+                        // sync_manager is restored into p2p.
+                        let mut sync_manager = match self.p2p.as_mut() {
+                            Some(p) => std::mem::replace(&mut p.sync_manager, SyncManager::new()),
+                            None => return,
+                        };
+                    
                         let verification_result = sync_manager
                             .verify_and_accept_blocks(&blocks, self);
-        
-                        // Put sync_manager back.
-                        if let Some(p2p) = self.p2p.as_mut() {
-                            p2p.sync_manager = sync_manager;
-                        }
-        
+                    
+                        // Always put sync_manager back, even on panic.
+                        let restore = SyncManagerRestore {
+                            node: self,
+                            sync_manager: Some(sync_manager),
+                        };
+                    
                         match verification_result {
                             Ok(new_height) => {
+                                drop(restore); // restore sync_manager into p2p
+                    
                                 let p2p = self.p2p.as_mut().unwrap();
                                 p2p.local_height = new_height;
                                 p2p.sync_manager.local_height = new_height;
@@ -1256,7 +1293,7 @@ impl Node {
                                     p2p.local_best_hash = last.header.hash(&mut argon2);
                                 }
                                 let _ = p2p.sync_manager.on_blocks_received(&blocks, &peer_id);
-        
+                    
                                 println!(
                                     "✅ Synced and stored {} blocks, new height: {}",
                                     blocks.len(),
@@ -1264,10 +1301,35 @@ impl Node {
                                 );
                             }
                             Err(e) => {
-                                eprintln!("❌ Failed to verify and store blocks: {}", e);
-                                let p2p = self.p2p.as_mut().unwrap();
-                                if let Some(peer) = p2p.peers.get_mut(&addr) {
-                                    peer.ban(&format!("Invalid blocks: {}", e));
+                                let is_prev_hash_race = e.contains("Invalid prev_hash");
+                    
+                                // Restore sync_manager before touching p2p further.
+                                drop(restore);
+                    
+                                if is_prev_hash_race {
+                                    // Pull/push race: not an attack.
+                                    // Do NOT reset the sync session — just retry shortly.
+                                    println!(
+                                        "⚠️ Invalid prev_hash from {} (pull/push race) — will retry in 2s",
+                                        addr
+                                    );
+                    
+                                    if let Some(p2p) = self.p2p.as_mut() {
+                                        if let Some(session) = p2p.sync_manager.active_session.as_mut() {
+                                            // Stay in Requesting — tick() will re-issue GetBlocks.
+                                            session.status = SyncStatus::Requesting;
+                                            session.last_activity = current_timestamp();
+                                        }
+                                        // Make sure tick() does not wait 2s before retrying.
+                                        self.last_sync_request_time = 0;
+                                    }
+                                } else {
+                                    eprintln!("❌ Failed to verify and store blocks: {}", e);
+                                    if let Some(p2p) = self.p2p.as_mut() {
+                                        if let Some(peer) = p2p.peers.get_mut(&addr) {
+                                            peer.ban(&format!("Invalid blocks: {}", e));
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1294,11 +1356,22 @@ impl Node {
                         let expected_height = self.height + 1;
                         let prev_hash = self.last_hash();
         
-                        if header.prev_hash != prev_hash {
-                            return;
+                        // Compute hash first — needed for the "already known" check.
+                       let hash = header.hash(&mut self.argon2);
+
+                        // If the block is already known — skip (broadcast race).
+                        if self.block_hashes.contains_key(&hash) {
+                         println!(
+                        "📥 Block {} already known, skipping",
+                          hex::encode(&hash[0..8])
+                     );
+                         return;
                         }
-        
-                        let hash = header.hash(&mut self.argon2);
+
+                         if header.prev_hash != prev_hash {
+                        // Race: block N arrived while we are at N-2. Sync will catch up.
+                         return;
+                        }
                         if !header.difficulty.is_met_by(&hash) {
                             println!("⚠️ Received invalid block (PoW failed)");
                             return;
@@ -1370,10 +1443,14 @@ impl Node {
                         self.timestamps.push(header.timestamp);
                         self.height = new_height;
                         self.cached_difficulty = None;
-        
+
+                        // Signal the mining thread: chain has moved.
+                        self.chain_generation.fetch_add(1, AtomicOrdering::Relaxed);
+                        self.abort_mining.store(true, AtomicOrdering::Relaxed);
+
                         self.update_utxo_set(&block);
 
-                                                // Height сохраняем ДО process_epoch_end — если оно упадёт,
+                        // Height сохраняем ДО process_epoch_end — если оно упадёт,
                         // height всё равно уже зафиксирован.
                         let _ = self.storage.save_state("height", &self.height);
 
@@ -1637,6 +1714,11 @@ impl Node {
     // ------------------------------------------------------------------
 
     pub fn mine_block(&mut self) {
+        // Snapshot chain generation; if it changes during mining,
+        // the chain has moved and our work is stale.
+        let gen_at_start = self.chain_generation.load(AtomicOrdering::Relaxed);
+        self.abort_mining.store(false, AtomicOrdering::Relaxed);
+
         // ---- 1. Collect non-coinbase txs from mempool. ----
         let mut non_coinbase_txs: Vec<Transaction> = Vec::new();
         let mut total_fees: u64 = 0;
@@ -1710,6 +1792,10 @@ impl Node {
                 let best_nonce_shared = Arc::new(AtomicU64::new(0));
                 let block_found = Arc::new(AtomicBool::new(false));
         
+                // Clones for the mining threads.
+                let abort_shared = Arc::clone(&self.abort_mining);
+                let gen_shared = Arc::clone(&self.chain_generation);
+        
                 let num_threads = self.config.mining.threads.max(1) as u64;
                 let batch = MINING_BATCH_SIZE;
         
@@ -1720,6 +1806,8 @@ impl Node {
                         let best_hash_ref = Arc::clone(&best_hash_shared);
                         let best_nonce_ref = Arc::clone(&best_nonce_shared);
                         let found_ref = Arc::clone(&block_found);
+                        let abort_ref = Arc::clone(&abort_shared);
+                        let gen_ref = Arc::clone(&gen_shared);
                         let hb = &header_bytes;
         
                         scope.spawn(move || {
@@ -1728,6 +1816,14 @@ impl Node {
                             let mut nonce = t;
                             while nonce < batch {
                                 if found_ref.load(AtomicOrdering::Relaxed) {
+                                    break;
+                                }
+        
+                                // Abort if chain moved — our work is stale.
+                                if abort_ref.load(AtomicOrdering::Relaxed) {
+                                    break;
+                                }
+                                if gen_ref.load(AtomicOrdering::Relaxed) != gen_at_start {
                                     break;
                                 }
         
@@ -1771,156 +1867,194 @@ impl Node {
         
                 let _elapsed = start_time.elapsed();
                 
-        // ---- 5. Persist. ----
-        if found_block {
-            // header.nonce was already set right after mining completes.
-
-            let mut block_txids = HashSet::new();
-            for tx in &txs {
-                if tx.is_coinbase() {
-                    continue;
-                }
-                let txid = tx.txid(&mut self.argon2);
-                if !block_txids.insert(txid) {
-                    println!("⚠️ Duplicate transaction in block, skipping");
+               // ---- 5. Persist. ----
+               if found_block {
+                // header.nonce was already set right after mining completes.
+    
+                // Race protection: while we were mining, tick() may have
+                // accepted a block from a peer. If so — drop our block.
+                if self.block_hashes.contains_key(&best_hash) {
+                    println!(
+                        "⚠️ [mine] Block {} already known, skipping",
+                        hex::encode(&best_hash[0..8])
+                    );
                     return;
                 }
-            }
-
-            let block_preview = Block {
-                header: header.clone(),
-                transactions: txs.clone(),
-                signature: None,
-                pubkey: None,
-            };
-            if let Err(e) = crate::p2p::validate_block_no_double_spend(&block_preview) {
-                println!("⚠️ Double spend in block, skipping: {}", e);
-                return;
-            }
-
-            let (signature, pubkey) = if let Some(wallet) = &self.wallet {
-                let block_hash = header.hash(&mut self.argon2);
-                (
-                    wallet.sign_block(&block_hash).ok(),
-                    Some(wallet.public_key.clone()),
-                )
-            } else {
-                (None, None)
-            };
-
-            let block = Block {
-                header: header.clone(),
-                transactions: txs,
-                signature,
-                pubkey,
-            };
-
-            // Шару всё равно сохраняем, но без печати на экран.
-            let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
-            let _ = self.add_share(share);
-
-            let new_height = self.height + 1;
-            if let Err(e) = self.storage.save_block(new_height, &block) {
-                println!("⚠️ Failed to save block {}: {}", new_height, e);
-            }
-
-            let prev_ts = self
-                .blocks
-                .last()
-                .map(|b| b.timestamp)
-                .unwrap_or(header.timestamp);
-            self.last_block_time_secs = header.timestamp.saturating_sub(prev_ts);
-            self.last_nonce = best_nonce;
-
-            self.blocks.push(header.clone());
-            self.block_hashes.insert(best_hash, new_height);
-            self.timestamps.push(header.timestamp);
-            self.height = new_height;
-            self.cached_difficulty = None;
-            self.blocks_found += 1;
-
-                        // Keep P2P state in sync.
-                        if let Some(p2p) = self.p2p.as_mut() {
-                            p2p.local_height = new_height;
-                            p2p.local_best_hash = best_hash;
-                            p2p.sync_manager.local_height = new_height;
-                        }
-
-            self.total_emitted = self.total_emitted.saturating_add(BLOCK_REWARD_LYT);
-            let _ = self
-                .storage
-                .save_state("total_emitted", &self.total_emitted);
-
-            self.update_utxo_set(&block);
-
-            let included_txids: HashSet<Txid> = block
-                .transactions
-                .iter()
-                .filter(|tx| !tx.is_coinbase())
-                .map(|tx| tx.txid(&mut self.argon2))
-                .collect();
-
-            for txid in &included_txids {
-                self.processed_txids.insert(*txid, self.height);
-            }
-
-            let old_mempool = std::mem::take(&mut self.mempool);
-            let mut new_mempool = Vec::with_capacity(old_mempool.len());
-            for tx in old_mempool {
-                let txid = tx.txid(&mut self.argon2);
-                if included_txids.contains(&txid) {
-                    // included — drop from mempool
-                } else {
-                    self.processed_txids.remove(&txid);
-                    new_mempool.push(tx);
+                let new_height = self.height + 1;
+                if new_height <= self.height {
+                    println!(
+                        "⚠️ [mine] Stale block: new_height={} <= height={}",
+                        new_height, self.height
+                    );
+                    return;
                 }
-            }
-            self.mempool = new_mempool;
-            let _ = self.storage.save_mempool(&self.mempool);
-
-            self.prune_processed_txids();
-
-            if new_height % EPOCH_BLOCKS == 0 {
-                if let Err(e) = self.process_epoch_end() {
-                    println!("⚠️ Epoch processing failed: {}", e);
+                if header.prev_hash != self.last_hash() {
+                    println!("⚠️ [mine] Chain moved while mining, skipping");
+                    return;
                 }
-            }
-
-            let _ = self.storage.save_state("height", &self.height);
-            let _ = self.storage.save_state("epoch", &self.epoch);
-
-            let interval = self.config.advanced.checkpoint_interval;
-            if interval > 0 && self.height % interval == 0 {
-                self.create_checkpoint();
-            }
-
-                        // Backup is handled outside the write-lock in main.rs.
-            use colored::Colorize;
-            println!(
-                "\r\x1b[K{} {} {} {} {}",
-                "[BLOCK]".green().bold(),
-                format!("height={}", new_height).cyan(),
-                format!("hash={}", hex::encode(&best_hash[0..8])).yellow(),
-                format!("epoch={}", self.epoch).cyan(),
-                format!("nonce={}", best_nonce).cyan(),
-            );
-
-            if let Some(p2p) = &mut self.p2p {
-                p2p.broadcast(&P2PMessage::Block {
+    
+                // Collect non-coinbase txids to detect duplicates.
+                let mut block_txids = HashSet::new();
+                for tx in &txs {
+                    if tx.is_coinbase() {
+                        continue;
+                    }
+                    let txid = tx.txid(&mut self.argon2);
+                    if !block_txids.insert(txid) {
+                        println!("⚠️ Duplicate transaction in block, skipping");
+                        return;
+                    }
+                }
+    
+                // Pre-validate no double spend.
+                let block_preview = Block {
                     header: header.clone(),
-                    transactions: block.transactions.clone(),
-                    signature: block.signature.clone(),
-                    pubkey: block.pubkey.clone(),
-                });
+                    transactions: txs.clone(),
+                    signature: None,
+                    pubkey: None,
+                };
+                if let Err(e) = crate::p2p::validate_block_no_double_spend(&block_preview) {
+                    println!("⚠️ Double spend in block, skipping: {}", e);
+                    return;
+                }
+    
+                // Sign the block with our wallet.
+                let (signature, pubkey) = if let Some(wallet) = &self.wallet {
+                    let block_hash = header.hash(&mut self.argon2);
+                    (
+                        wallet.sign_block(&block_hash).ok(),
+                        Some(wallet.public_key.clone()),
+                    )
+                } else {
+                    (None, None)
+                };
+    
+                let block = Block {
+                    header: header.clone(),
+                    transactions: txs,
+                    signature,
+                    pubkey,
+                };
+    
+                // Save the share silently — visible in [STATUS] as shares=N.
+                let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
+                let _ = self.add_share(share);
+    
+                // Persist the block.
+                if let Err(e) = self.storage.save_block(new_height, &block) {
+                    println!("⚠️ Failed to save block {}: {}", new_height, e);
+                }
+    
+                // Update in-memory chain state.
+                let prev_ts = self
+                    .blocks
+                    .last()
+                    .map(|b| b.timestamp)
+                    .unwrap_or(header.timestamp);
+                self.last_block_time_secs = header.timestamp.saturating_sub(prev_ts);
+                self.last_nonce = best_nonce;
+    
+                self.blocks.push(header.clone());
+                self.block_hashes.insert(best_hash, new_height);
+                self.timestamps.push(header.timestamp);
+                self.height = new_height;
+                self.cached_difficulty = None;
+                self.blocks_found += 1;
+
+                // Signal: our own chain has moved.
+                self.chain_generation.fetch_add(1, AtomicOrdering::Relaxed);
+                self.abort_mining.store(true, AtomicOrdering::Relaxed);
+
+                // Keep P2P state in sync.
+                if let Some(p2p) = self.p2p.as_mut() {
+                    p2p.local_height = new_height;
+                    p2p.local_best_hash = best_hash;
+                    p2p.sync_manager.local_height = new_height;
+                }
+    
+                // Update emission counter.
+                self.total_emitted = self.total_emitted.saturating_add(BLOCK_REWARD_LYT);
+                let _ = self
+                    .storage
+                    .save_state("total_emitted", &self.total_emitted);
+    
+                // Apply the block to the UTXO set.
+                self.update_utxo_set(&block);
+    
+                // Track txids included in this block.
+                let included_txids: HashSet<Txid> = block
+                    .transactions
+                    .iter()
+                    .filter(|tx| !tx.is_coinbase())
+                    .map(|tx| tx.txid(&mut self.argon2))
+                    .collect();
+    
+                for txid in &included_txids {
+                    self.processed_txids.insert(*txid, self.height);
+                }
+    
+                // Drop included txs from the mempool.
+                let old_mempool = std::mem::take(&mut self.mempool);
+                let mut new_mempool = Vec::with_capacity(old_mempool.len());
+                for tx in old_mempool {
+                    let txid = tx.txid(&mut self.argon2);
+                    if included_txids.contains(&txid) {
+                        // included — drop from mempool
+                    } else {
+                        self.processed_txids.remove(&txid);
+                        new_mempool.push(tx);
+                    }
+                }
+                self.mempool = new_mempool;
+                let _ = self.storage.save_mempool(&self.mempool);
+    
+                self.prune_processed_txids();
+    
+                // Epoch transition.
+                if new_height % EPOCH_BLOCKS == 0 {
+                    if let Err(e) = self.process_epoch_end() {
+                        println!("⚠️ Epoch processing failed: {}", e);
+                    }
+                }
+    
+                let _ = self.storage.save_state("height", &self.height);
+                let _ = self.storage.save_state("epoch", &self.epoch);
+    
+                // Checkpoint (if configured).
+                let interval = self.config.advanced.checkpoint_interval;
+                if interval > 0 && self.height % interval == 0 {
+                    self.create_checkpoint();
+                }
+    
+                // Backup is handled outside the write-lock in main.rs.
+                use colored::Colorize;
+                println!(
+                    "\r\x1b[K{} {} {} {} {}",
+                    "[BLOCK]".green().bold(),
+                    format!("height={}", new_height).cyan(),
+                    format!("hash={}", hex::encode(&best_hash[0..8])).yellow(),
+                    format!("epoch={}", self.epoch).cyan(),
+                    format!("nonce={}", best_nonce).cyan(),
+                );
+    
+                // Broadcast the block to all peers.
+                if let Some(p2p) = &mut self.p2p {
+                    p2p.broadcast(&P2PMessage::Block {
+                        header: header.clone(),
+                        transactions: block.transactions.clone(),
+                        signature: block.signature.clone(),
+                        pubkey: block.pubkey.clone(),
+                    });
+                }
+            } else if best_hash != [0xffu8; 32] {
+                header.nonce = best_nonce;
+                let share = Share::new(self.miner_id, header, best_nonce, best_hash);
+                let _ = self.add_share(share);
+                // Do not print [SHARE] — it is visible in [STATUS] as shares=...
             }
-        } else if best_hash != [0xffu8; 32] {
-            header.nonce = best_nonce;
-            let share = Share::new(self.miner_id, header, best_nonce, best_hash);
-            let _ = self.add_share(share);
-            // Do not print [SHARE] — it is visible in [STATUS] as shares=...
+            // If neither block nor share — stay silent to avoid spam.
         }
-        // If neither block nor share — stay silent to avoid spam.
-    }
+        
     pub fn update_utxo_set(&mut self, block: &Block) {
         for tx in &block.transactions {
             let txid = tx.txid(&mut self.argon2);
