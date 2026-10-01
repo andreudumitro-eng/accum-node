@@ -8,6 +8,7 @@ use crate::miner::Share;
 use crate::network::DDoSProtection;
 use crate::storage::{Checkpoint, ProductionStorage};
 use crate::node::Node;
+use crate::node::AcceptError;
 use crate::types::{current_timestamp, Hash32, Height, MinerId, OutPoint, PeerId, Timestamp};
 use crate::wallet::Wallet;
 use rand::{thread_rng, RngCore};
@@ -1054,141 +1055,41 @@ impl SyncManager {
         blocks: &[Block],
         node: &mut Node,
     ) -> Result<Height, String> {
-        let mut new_height = node.height;
+        let mut accepted = 0u64;
+        let mut last_error: Option<AcceptError> = None;
 
-        for (idx, block) in blocks.iter().enumerate() {
-            let expected_height = new_height + 1;
-
-            let prev_block = node
-                .storage
-                .get_block(expected_height.saturating_sub(1))?
-                .ok_or("Previous block not found")?;
-
-            let expected_prev = prev_block.header.hash(&mut node.argon2);
-
-            if block.header.prev_hash != expected_prev {
-                return Err(format!("Invalid prev_hash at height {}", expected_height));
-            }
-
-            let block_hash = block.header.hash(&mut node.argon2);
-            if !block.header.difficulty.is_met_by(&block_hash) {
-                return Err(format!(
-                    "Block hash doesn't meet difficulty at height {}",
-                    expected_height
-                ));
-            }
-
-            if let Some(cp) = node.checkpoint_at(expected_height) {
-                if block_hash != cp.block_hash {
-                    return Err(format!(
-                        "Block hash at height {} conflicts with checkpoint",
-                        expected_height
-                    ));
+        for block in blocks {
+            match node.accept_block(block) {
+                Ok(()) => {
+                    accepted += 1;
                 }
-            }
-
-            let prev_timestamp = Some(prev_block.header.timestamp);
-            let median = node.median_timestamp();
-
-            if !block.header.validate_timestamp(prev_timestamp, median) {
-                return Err(format!("Invalid timestamp at height {}", expected_height));
-            }
-
-            let computed_root = Self::compute_merkle_root(&block.transactions, &mut node.argon2);
-            if block.header.merkle_root != computed_root {
-                return Err(format!("Invalid merkle root at height {}", expected_height));
-            }
-
-            validate_block_coinbase(block, &node.storage)?;
-            validate_block_no_double_spend(block)?;
-
-            match (&block.signature, &block.pubkey) {
-                (Some(sig), Some(pubkey)) => {
-                    if !Wallet::verify_signature(pubkey, sig, &block_hash) {
-                        return Err(format!(
-                            "Invalid block signature at height {}",
-                            expected_height
-                        ));
-                    }
+                Err(AcceptError::AlreadyKnown) => {
+                    // Not an error: we've seen it.
+                    accepted += 1;
                 }
-                _ => {
-                    return Err(format!(
-                        "Missing block signature at height {}",
-                        expected_height
-                    ));
+                Err(e) => {
+                    last_error = Some(e);
+                    break;
                 }
-            }
-
-            node.storage.save_block(expected_height, block)?;
-            node.update_utxo_set(block);
-
-            node.blocks.push(block.header.clone());
-            node.block_hashes.insert(block_hash, expected_height);
-            node.timestamps.push(block.header.timestamp);
-            node.height = expected_height;
-            node.cached_difficulty = None;
-
-            // Signal the mining thread: chain has moved.
-            // Must be done for EVERY accepted block (not once at the end),
-            // because a later block in the batch may fail validation and
-            // return Err before the outer caller gets a chance to signal.
-            node.chain_generation.fetch_add(1, Ordering::Relaxed);
-            node.abort_mining.store(true, Ordering::Relaxed);
-
-            node.storage
-                .save_state("height", &expected_height)
-                .map_err(|e| format!("save height: {}", e))?;
-                
-            if expected_height % EPOCH_BLOCKS == 0 {
-                if let Err(e) = node.process_epoch_end() {
-                    println!(
-                        "⚠️ Epoch processing failed at height {}: {}",
-                        expected_height, e
-                    );
-                }
-            }
-
-            node.storage
-                .save_state("epoch", &node.epoch)
-                .map_err(|e| format!("save epoch: {}", e))?;
-
-            let mut txids_in_block = HashSet::new();
-            for tx in &block.transactions {
-                if !tx.is_coinbase() {
-                    let txid = tx.txid(&mut node.argon2);
-                    txids_in_block.insert(txid);
-                    node.processed_txids.insert(txid, expected_height);
-                }
-            }
-            node.mempool.retain(|tx| {
-                let txid = tx.txid(&mut node.argon2);
-                !txids_in_block.contains(&txid)
-            });
-
-            // DEPRECATED mirrors — не используются как источник истины,
-            // но оставлены, чтобы не ломать возможные внешние вызовы.
-            self.local_chain.push(block.header.clone());
-            self.local_hashes.insert(block_hash, expected_height);
-
-            new_height = expected_height;
-
-            if idx == blocks.len() - 1 {
-                println!(
-                    "✅ Verified and accepted {} blocks, new height: {}",
-                    blocks.len(),
-                    new_height
-                );
             }
         }
 
-        node.storage
-            .save_mempool(&node.mempool)
-            .map_err(|e| format!("save mempool: {}", e))?;
-
-        // ВАЖНО: обновляем собственную высоту внутри SyncManager.
-        // Без этой строки needs_sync() всегда думает, что мы отстаём,
-        // и запускает бесконечные циклы синхронизации.
+        let new_height = node.height;
         self.local_height = new_height;
+
+        // Mirror into deprecated fields for backward-compat.
+        if accepted > 0 {
+            for block in &blocks[..accepted as usize] {
+                let h = block.header.hash(&mut node.argon2);
+                self.local_chain.push(block.header.clone());
+                self.local_hashes.insert(h, node.block_hashes[&h]);
+            }
+        }
+
+        if let Some(e) = last_error {
+            // Return info for the caller to decide whether to ban.
+            return Err(format!("{}: {}", accepted, e.describe()));
+        }
 
         Ok(new_height)
     }

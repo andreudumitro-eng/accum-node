@@ -30,7 +30,59 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::sync::Mutex;
-use secp256k1::PublicKey;
+use secp256k1::PublicKey; 
+
+/// Result of accepting a single block.
+/// `AlreadyKnown` is not an error: it just means we have seen the block before.
+#[derive(Debug)]
+pub enum AcceptError {
+    PrevHashMismatch { expected: Hash32, got: Hash32, height: Height },
+    AlreadyKnown,
+    BadPow,
+    BadMerkle,
+    BadSignature,
+    BadTimestamp,
+    BadCoinbase(String),
+    BadDoubleSpend(String),
+    Storage(String),
+}
+
+impl AcceptError {
+    /// Returns `true` if this error indicates a misbehaving peer
+    /// (should be banned), `false` for benign races or local errors.
+    pub fn is_attack(&self) -> bool {
+        match self {
+            // Benign: a race, not an attack.
+            AcceptError::PrevHashMismatch { .. } => false,
+            // Already known — not an attack, just redundant.
+            AcceptError::AlreadyKnown => false,
+            // Local storage error — not the peer's fault.
+            AcceptError::Storage(_) => false,
+            // Everything else: invalid block → ban the peer.
+            _ => true,
+        }
+    }
+
+    /// Short human-readable description for logs.
+    pub fn describe(&self) -> String {
+        match self {
+            AcceptError::PrevHashMismatch { expected, got, height } => format!(
+                "Invalid prev_hash at height {} (expected {}..., got {}...)",
+                height,
+                hex::encode(&expected[0..8]),
+                hex::encode(&got[0..8]),
+            ),
+            AcceptError::AlreadyKnown => "Block already known".to_string(),
+            AcceptError::BadPow => "PoW check failed".to_string(),
+            AcceptError::BadMerkle => "Invalid merkle root".to_string(),
+            AcceptError::BadSignature => "Invalid block signature".to_string(),
+            AcceptError::BadTimestamp => "Invalid block timestamp".to_string(),
+            AcceptError::BadCoinbase(msg) => format!("Invalid coinbase: {}", msg),
+            AcceptError::BadDoubleSpend(msg) => format!("Double spend: {}", msg),
+            AcceptError::Storage(msg) => format!("Storage error: {}", msg),
+        }
+    }
+}
 
 /// A prepared mining job: everything needed to run the PoW search
 /// without holding the Node write-lock.
@@ -1365,158 +1417,54 @@ impl Node {
                         signature,
                         pubkey,
                     } => {
-                        let expected_height = self.height + 1;
-                        let prev_hash = self.last_hash();
-        
-                        // Compute hash first — needed for the "already known" check.
-                       let hash = header.hash(&mut self.argon2);
-
-                        // If the block is already known — skip (broadcast race).
-                        if self.block_hashes.contains_key(&hash) {
-                         println!(
-                        "📥 Block {} already known, skipping",
-                          hex::encode(&hash[0..8])
-                     );
-                         return;
-                        }
-
-                         if header.prev_hash != prev_hash {
-                        // Race: block N arrived while we are at N-2. Sync will catch up.
-                         return;
-                        }
-                        if !header.difficulty.is_met_by(&hash) {
-                            println!("⚠️ Received invalid block (PoW failed)");
-                            return;
-                        }
-        
-                        if let Some(cp) = self.checkpoint_at(expected_height) {
-                            if hash != cp.block_hash {
-                                println!(
-                                    "⚠️ Block hash conflicts with checkpoint at height {}",
-                                    expected_height
-                                );
-                                return;
-                            }
-                        }
-        
-                        if let (Some(sig), Some(pk)) = (&signature, &pubkey) {
-                            if !Wallet::verify_signature(pk, sig, &hash) {
-                                println!("⚠️ Received block with invalid signature");
-                                return;
-                            }
-                        } else {
-                            println!("⚠️ Received block without signature");
-                            return;
-                        }
-        
-                        let prev_timestamp = if self.height > 0 {
-                            self.blocks.last().map(|b| b.timestamp)
-                        } else {
-                            None
-                        };
-                        let median = self.median_timestamp();
-                        if !header.validate_timestamp(prev_timestamp, median) {
-                            println!("⚠️ Received block with invalid timestamp");
-                            return;
-                        }
-        
-                        let computed_root =
-                            SyncManager::compute_merkle_root(&transactions, &mut self.argon2);
-                        if header.merkle_root != computed_root {
-                            println!("⚠️ Received block with invalid merkle root");
-                            return;
-                        }
-        
                         let block = Block {
-                            header: header.clone(),
-                            transactions: transactions.clone(),
+                            header,
+                            transactions,
                             signature,
                             pubkey,
                         };
-        
-                        if let Err(e) = validate_block_coinbase(&block, &self.storage) {
-                            println!("⚠️ Received block with invalid coinbase: {}", e);
-                            return;
-                        }
-        
-                        if let Err(e) = validate_block_no_double_spend(&block) {
-                            println!("⚠️ Received block with double spend: {}", e);
-                            return;
-                        }
-        
-                        let new_height = expected_height;
-                        if let Err(e) = self.storage.save_block(new_height, &block) {
-                            println!("❌ Failed to save received block: {}", e);
-                            return;
-                        }
-        
-                        self.blocks.push(header.clone());
-                        self.block_hashes.insert(hash, new_height);
-                        self.timestamps.push(header.timestamp);
-                        self.height = new_height;
-                        self.cached_difficulty = None;
 
-                        // Signal the mining thread: chain has moved.
-                        self.chain_generation.fetch_add(1, AtomicOrdering::Relaxed);
-                        self.abort_mining.store(true, AtomicOrdering::Relaxed);
+                        match self.accept_block(&block) {
+                            Ok(()) => {
+                                // Update P2P state + broadcast.
+                                let hash = block.header.hash(&mut self.argon2);
+                                let new_height = self.height;
 
-                        self.update_utxo_set(&block);
+                                if let Some(p2p) = self.p2p.as_mut() {
+                                    p2p.local_height = new_height;
+                                    p2p.local_best_hash = hash;
+                                    p2p.sync_manager.local_height = new_height;
 
-                        // Height сохраняем ДО process_epoch_end — если оно упадёт,
-                        // height всё равно уже зафиксирован.
-                        let _ = self.storage.save_state("height", &self.height);
+                                    let msg = P2PMessage::Block {
+                                        header: block.header.clone(),
+                                        transactions: block.transactions.clone(),
+                                        signature: block.signature.clone(),
+                                        pubkey: block.pubkey.clone(),
+                                    };
 
-                        // Epoch transition when syncing via P2P.
-                        if new_height % EPOCH_BLOCKS == 0 {
-                            if let Err(e) = self.process_epoch_end() {
-                                println!("⚠️ Epoch processing failed: {}", e);
+                                    for (peer_addr, peer) in p2p.peers.iter_mut() {
+                                        if *peer_addr != addr && !peer.is_banned() {
+                                            let _ = peer.send_message(&msg);
+                                        }
+                                    }
+                                }
+
+                                println!("📥 Received and accepted block #{}", new_height);
                             }
-                        }
-
-                        // Epoch сохраняем ПОСЛЕ process_epoch_end — epoch мог измениться.
-                        let _ = self.storage.save_state("epoch", &self.epoch);
-
-                        // Чистим processed_txids, иначе растёт неограниченно.
-                        self.prune_processed_txids();
-
-                        let mut txids_in_block = HashSet::new();
-                        for tx in &block.transactions {
-                            if !tx.is_coinbase() {
-                                let txid = tx.txid(&mut self.argon2);
-                                txids_in_block.insert(txid);
-                                self.processed_txids.insert(txid, new_height);
+                            Err(AcceptError::AlreadyKnown) => {
+                                // Silent — we already have it.
                             }
-                        }
-        
-                        let old_mempool = std::mem::take(&mut self.mempool);
-                        let mut new_mempool = Vec::with_capacity(old_mempool.len());
-                        for tx in old_mempool {
-                            let txid = tx.txid(&mut self.argon2);
-                            if !txids_in_block.contains(&txid) {
-                                new_mempool.push(tx);
-                            }
-                        }
-                        self.mempool = new_mempool;
-        
-                        let _ = self.storage.save_mempool(&self.mempool);
-        
-                        let p2p = self.p2p.as_mut().unwrap();
-                        p2p.local_height = new_height;
-                        p2p.local_best_hash = hash;
-                        p2p.sync_manager.local_height = new_height;
-        
-                        println!("📥 Received and accepted block #{}", new_height);
-        
-                        let msg = P2PMessage::Block {
-                            header: header.clone(),
-                            transactions: block.transactions.clone(),
-                            signature: block.signature.clone(),
-                            pubkey: block.pubkey.clone(),
-                        };
-        
-                        for (peer_addr, peer) in p2p.peers.iter_mut() {
-                            if *peer_addr != addr && !peer.is_banned() {
-                                let _ = peer.send_message(&msg);
+                            Err(e) => {
+                                let is_benign = !e.is_attack();
+                                println!("⚠️ [accept_block] {}", e.describe());
+
+                                if !is_benign {
+                                    if let Some(p2p) = self.p2p.as_mut() {
+                                        if let Some(peer) = p2p.peers.get_mut(&addr) {
+                                            peer.ban(&format!("Invalid block: {}", e.describe()));
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1728,6 +1676,144 @@ impl Node {
     /// Returns everything needed to run the PoW search without holding
     /// the write-lock. The `generation` field records the current
     /// chain generation so the caller can detect a chain move.
+        /// Accept a single block into the chain.
+    ///
+    /// This is the ONLY path for adding a block — both `P2PMessage::Block`
+    /// and `P2PMessage::Blocks` go through here. It validates the block,
+    /// persists it, updates the chain state, and signals the mining thread.
+    ///
+    /// Returns:
+    /// - `Ok(())` — block accepted.
+    /// - `Err(AcceptError::AlreadyKnown)` — block already in the chain (not an error).
+    /// - `Err(other)` — block rejected.
+    pub fn accept_block(&mut self, block: &Block) -> Result<(), AcceptError> {
+        let expected_height = self.height + 1;
+
+        // Compute hash first — used for multiple checks.
+        let hash = block.header.hash(&mut self.argon2);
+
+        // Already known?
+        if self.block_hashes.contains_key(&hash) {
+            return Err(AcceptError::AlreadyKnown);
+        }
+
+        // prev_hash must match our current tip.
+        let expected_prev = self.last_hash();
+        if block.header.prev_hash != expected_prev {
+            return Err(AcceptError::PrevHashMismatch {
+                expected: expected_prev,
+                got: block.header.prev_hash,
+                height: expected_height,
+            });
+        }
+
+        // PoW.
+        if !block.header.difficulty.is_met_by(&hash) {
+            return Err(AcceptError::BadPow);
+        }
+
+        // Checkpoint (if any).
+        if let Some(cp) = self.checkpoint_at(expected_height) {
+            if hash != cp.block_hash {
+                return Err(AcceptError::BadPow);
+            }
+        }
+
+        // Signature.
+        match (&block.signature, &block.pubkey) {
+            (Some(sig), Some(pk)) => {
+                if !Wallet::verify_signature(pk, sig, &hash) {
+                    return Err(AcceptError::BadSignature);
+                }
+            }
+            _ => return Err(AcceptError::BadSignature),
+        }
+
+        // Timestamp.
+        let prev_timestamp = if self.height > 0 {
+            self.blocks.last().map(|b| b.timestamp)
+        } else {
+            None
+        };
+        let median = self.median_timestamp();
+        if !block.header.validate_timestamp(prev_timestamp, median) {
+            return Err(AcceptError::BadTimestamp);
+        }
+
+        // Merkle root.
+        let computed_root =
+            SyncManager::compute_merkle_root(&block.transactions, &mut self.argon2);
+        if block.header.merkle_root != computed_root {
+            return Err(AcceptError::BadMerkle);
+        }
+
+        // Coinbase.
+        if let Err(e) = validate_block_coinbase(block, &self.storage) {
+            return Err(AcceptError::BadCoinbase(e));
+        }
+
+        // Double spend.
+        if let Err(e) = validate_block_no_double_spend(block) {
+            return Err(AcceptError::BadDoubleSpend(e));
+        }
+
+        // ---- Persist ----
+        if let Err(e) = self.storage.save_block(expected_height, block) {
+            return Err(AcceptError::Storage(e));
+        }
+
+        self.blocks.push(block.header.clone());
+        self.block_hashes.insert(hash, expected_height);
+        self.timestamps.push(block.header.timestamp);
+        self.height = expected_height;
+        self.cached_difficulty = None;
+
+        // Signal the mining thread: chain moved.
+        self.chain_generation.fetch_add(1, AtomicOrdering::Relaxed);
+        self.abort_mining.store(true, AtomicOrdering::Relaxed);
+
+        // Apply to UTXO set.
+        self.update_utxo_set(block);
+
+        // Persist height.
+        let _ = self.storage.save_state("height", &self.height);
+
+        // Epoch transition.
+        if expected_height % EPOCH_BLOCKS == 0 {
+            if let Err(e) = self.process_epoch_end() {
+                println!("⚠️ Epoch processing failed: {}", e);
+            }
+        }
+        let _ = self.storage.save_state("epoch", &self.epoch);
+
+        // Prune txids.
+        self.prune_processed_txids();
+
+        // Track txids in this block.
+        let mut txids_in_block = HashSet::new();
+        for tx in &block.transactions {
+            if !tx.is_coinbase() {
+                let txid = tx.txid(&mut self.argon2);
+                txids_in_block.insert(txid);
+                self.processed_txids.insert(txid, expected_height);
+            }
+        }
+
+        // Remove included txns from mempool.
+        let old_mempool = std::mem::take(&mut self.mempool);
+        let mut new_mempool = Vec::with_capacity(old_mempool.len());
+        for tx in old_mempool {
+            let txid = tx.txid(&mut self.argon2);
+            if !txids_in_block.contains(&txid) {
+                new_mempool.push(tx);
+            }
+        }
+        self.mempool = new_mempool;
+        let _ = self.storage.save_mempool(&self.mempool);
+
+        Ok(())
+    }
+
     pub fn prepare_mining_job(&mut self) -> Result<MiningJob, String> {
         let generation = self.chain_generation.load(AtomicOrdering::Relaxed);
 
