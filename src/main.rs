@@ -40,6 +40,9 @@ mod p2p;
 use node::*;
 mod rpc;
 use rpc::*;
+use crate::crypto::Argon2Cache;
+use crate::types::Hash32;
+use crate::node::header_with_nonce_hash;
 
 lazy_static::lazy_static! {
     pub static ref SECP: Secp256k1<secp256k1::All> = Secp256k1::new();
@@ -481,21 +484,15 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
 
     // ---- Mining thread ----
     //
-    // Design notes:
+    // Design:
+    //   Phase 1 (write-lock): prepare_mining_job — build header, merkle, coinbase.
+    //   Phase 2 (no lock):    mine_multithreaded — search for a nonce.
+    //   Phase 3 (write-lock): commit_mining_result — validate & persist.
     //
-    //   - TOCTOU fix: the `can_mine` check and the `mine_block()` call are
-    //     done under the SAME write-lock, so no incoming block can land
-    //     between the sync check and the mining start.
-    //
-    //   - solo_ok = peers > 0 || ALLOW_SOLO_GENESIS. If we have at least one
-    //     peer, we are part of a network; otherwise, mining only proceeds
-    //     when explicitly allowed (genesis day).
-    //
-    //   - `attempted` = true means "we passed the gate and ran one mining
-    //     batch", NOT "we found a block". Finding a block or a share is
-    //     reported inside `mine_block` itself.
-    //
-    // TODO (long-term): refactor to snapshot + apply.
+    // The write-lock is NOT held during the PoW search, so `tick()` (P2P, RPC)
+    // runs concurrently. If a block arrives during Phase 2, `chain_generation`
+    // is bumped and `abort_mining` is set; the search exits early, and Phase 3
+    // drops the stale job.
     if config.mining.enabled {
         let node_for_miner = node_arc.clone();
         std::thread::spawn(move || {
@@ -506,17 +503,13 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                     break;
                 }
 
-                let attempted = {
+                // ---- Phase 1: prepare a job under a short write-lock. ----
+                let job = {
                     let mut node = node_for_miner.write();
 
                     let peers = node.p2p.as_ref().map(|p| p.peer_count()).unwrap_or(0);
                     let is_syncing = node.p2p.as_ref().map(|p| p.is_syncing()).unwrap_or(false);
 
-                    // Gate: mine only when we are not in active sync
-                    // and not too far behind the best peer.
-                    // `behind <= 2` allows both nodes in a small network
-                    // to mine concurrently. The old `synced >= 0.99` gate
-                    // would prevent the slower node from ever catching up.
                     let our_height = node.height;
                     let best_peer = node
                         .p2p
@@ -529,18 +522,46 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                     let solo_ok = peers > 0 || genesis_mode;
 
                     if !is_syncing && not_too_far_behind && solo_ok {
-                        node.mine_block();
-                        true
+                        node.abort_mining
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        match node.prepare_mining_job() {
+                            Ok(j) => Some(j),
+                            Err(e) => {
+                                eprintln!("⚠️ prepare_mining_job failed: {}", e);
+                                None
+                            }
+                        }
                     } else {
-                        false
+                        None
                     }
                 };
 
-                if !attempted {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                } else {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                let job = match job {
+                    Some(j) => j,
+                    None => {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        continue;
+                    }
+                };
+
+                // ---- Phase 2: mine WITHOUT holding the write-lock. ----
+                let (best_nonce, best_hash, found_block) = mine_multithreaded(
+                    &job,
+                    &node_for_miner,
+                    config.mining.threads.max(1) as u64,
+                );
+
+                // ---- Phase 3: commit under a short write-lock. ----
+                {
+                    let mut node = node_for_miner.write();
+                    if let Err(e) =
+                        node.commit_mining_result(&job, best_nonce, best_hash, found_block)
+                    {
+                        eprintln!("⚠️ commit_mining_result failed: {}", e);
+                    }
                 }
+
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
         });
     }
@@ -553,4 +574,96 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
     tokio::time::sleep(Duration::from_secs(3)).await;
     println!("🙋 Goodbye!");
     std::process::exit(0);
+}
+
+// ============================================================
+// Mining helper: multi-threaded PoW search without holding any lock.
+//
+// Takes a `MiningJob` and a reference to `node_arc` for reading
+// `abort_mining` and `chain_generation` atomics.
+// Returns `(best_nonce, best_hash, found_block)`.
+// ============================================================
+fn mine_multithreaded(
+    job: &node::MiningJob,
+    node_arc: &std::sync::Arc<parking_lot::RwLock<node::Node>>,
+    num_threads: u64,
+) -> (u64, Hash32, bool) {
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
+
+    let difficulty = job.difficulty;
+    let target_share = difficulty.share_target();
+    let target_prefilter = difficulty.prefilter_target();
+    let header_bytes = job.header.to_bytes();
+    let gen_at_start = job.generation;
+
+    let best_hash_shared = Arc::new(Mutex::new([0xffu8; 32]));
+    let best_nonce_shared = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let block_found = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let num_threads = num_threads.max(1);
+    let batch = MINING_BATCH_SIZE;
+
+    std::thread::scope(|scope| {
+        for t in 0..num_threads {
+            let best_hash_ref = Arc::clone(&best_hash_shared);
+            let best_nonce_ref = Arc::clone(&best_nonce_shared);
+            let found_ref = Arc::clone(&block_found);
+            let node_ref = Arc::clone(node_arc);
+            let hb = &header_bytes;
+
+            scope.spawn(move || {
+                let mut local_argon2 = Argon2Cache::new(ARGON2_CACHE_SIZE);
+
+                let mut nonce = t;
+                while nonce < batch {
+                    if found_ref.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    // Read abort + generation without holding the write-lock.
+                    {
+                        let node = node_ref.read();
+                        if node.abort_mining.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if node.chain_generation.load(Ordering::Relaxed) != gen_at_start {
+                            break;
+                        }
+                    }
+
+                    if !Argon2Cache::prefilter(hb, nonce, &target_prefilter) {
+                        nonce += num_threads;
+                        continue;
+                    }
+
+                    let hash = crate::node::header_with_nonce_hash(hb, nonce, &mut local_argon2);
+
+                    // Block found?
+                    if difficulty.is_met_by(&hash) {
+                        best_nonce_ref.store(nonce, Ordering::Relaxed);
+                        *best_hash_ref.lock().unwrap() = hash;
+                        found_ref.store(true, Ordering::Relaxed);
+                        break;
+                    }
+
+                    // Share found?
+                    if target_share.is_met_by(&hash) {
+                        let mut best = best_hash_ref.lock().unwrap();
+                        if hash < *best {
+                            *best = hash;
+                            best_nonce_ref.store(nonce, Ordering::Relaxed);
+                        }
+                    }
+
+                    nonce += num_threads;
+                }
+            });
+        }
+    });
+
+    let best_hash = *best_hash_shared.lock().unwrap();
+    let best_nonce = best_nonce_shared.load(Ordering::Relaxed);
+    let found_block = block_found.load(Ordering::Relaxed);
+    (best_nonce, best_hash, found_block)
 }

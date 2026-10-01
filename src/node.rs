@@ -32,6 +32,18 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use secp256k1::PublicKey;
 
+/// A prepared mining job: everything needed to run the PoW search
+/// without holding the Node write-lock.
+pub struct MiningJob {
+    pub prev_hash: Hash32,
+    pub height: Height,
+    pub epoch: u32,
+    pub difficulty: Target,
+    pub header: BlockHeader,
+    pub txs: Vec<Transaction>,
+    pub generation: u64,
+}
+
 /// How many recent heights we keep txids in `processed_txids` for dedup.
 const PROCESSED_TXIDS_RETENTION: Height = 1_000;
 
@@ -1712,6 +1724,87 @@ impl Node {
     // ------------------------------------------------------------------
     // Mining
     // ------------------------------------------------------------------
+        /// Prepare a mining job under a short write-lock.
+    /// Returns everything needed to run the PoW search without holding
+    /// the write-lock. The `generation` field records the current
+    /// chain generation so the caller can detect a chain move.
+    pub fn prepare_mining_job(&mut self) -> Result<MiningJob, String> {
+        let generation = self.chain_generation.load(AtomicOrdering::Relaxed);
+
+        // ---- 1. Collect non-coinbase txs from mempool. ----
+        let mut non_coinbase_txs: Vec<Transaction> = Vec::new();
+        let mut total_fees: u64 = 0;
+        let mut total_size = 0usize;
+
+        for tx in &self.mempool {
+            let tx_size = tx.serialize().len();
+            if total_size + tx_size > 1_000_000 {
+                break;
+            }
+            match tx.fee(&self.storage) {
+                Ok(f) => {
+                    total_fees = total_fees.saturating_add(f);
+                    non_coinbase_txs.push(tx.clone());
+                    total_size += tx_size;
+                }
+                Err(e) => {
+                    println!("⚠️ Skipping tx with fee error: {}", e);
+                }
+            }
+        }
+
+        // ---- 2. Build coinbase. ----
+        let coinbase_total = BLOCK_REWARD_LYT.saturating_add(total_fees);
+        let mut outputs = Vec::new();
+        if let Some(wallet) = &self.wallet {
+            if let Ok(mut txout) = TxOut::create_p2pkh(&wallet.address) {
+                txout.value = coinbase_total;
+                outputs.push(txout);
+            }
+        }
+        if outputs.is_empty() {
+            return Err("Unable to create block reward output".to_string());
+        }
+
+        let coinbase = Transaction::coinbase(outputs, self.height + 1);
+        let mut txs = vec![coinbase];
+        txs.extend(non_coinbase_txs);
+
+        // ---- 3. Header + merkle. ----
+        let prev_hash = self.last_hash();
+        let difficulty = self.compute_difficulty_for_next_block();
+        let mut header = BlockHeader::new(prev_hash, self.epoch, difficulty);
+
+        let mut hashes: Vec<Hash32> = txs.iter().map(|tx| tx.txid(&mut self.argon2)).collect();
+        while hashes.len() > 1 {
+            let mut next = Vec::with_capacity((hashes.len() + 1) / 2);
+            for chunk in hashes.chunks(2) {
+                let mut data = Vec::with_capacity(64);
+                data.extend_from_slice(&chunk[0]);
+                if chunk.len() > 1 {
+                    data.extend_from_slice(&chunk[1]);
+                } else {
+                    data.extend_from_slice(&chunk[0]);
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&Sha256::digest(&data));
+                next.push(arr);
+            }
+            hashes = next;
+        }
+        header.merkle_root = hashes.first().copied().unwrap_or([0; 32]);
+
+        Ok(MiningJob {
+            prev_hash,
+            height: self.height + 1,
+            epoch: self.epoch,
+            difficulty,
+            header,
+            txs,
+            generation,
+        })
+    }
+
 
     pub fn mine_block(&mut self) {
         // Snapshot chain generation; if it changes during mining,
@@ -2037,24 +2130,216 @@ impl Node {
                     format!("nonce={}", best_nonce).cyan(),
                 );
     
-                // Broadcast the block to all peers.
-                if let Some(p2p) = &mut self.p2p {
-                    p2p.broadcast(&P2PMessage::Block {
-                        header: header.clone(),
-                        transactions: block.transactions.clone(),
-                        signature: block.signature.clone(),
-                        pubkey: block.pubkey.clone(),
-                    });
-                }
-            } else if best_hash != [0xffu8; 32] {
+                               // Broadcast the block to all peers.
+                               if let Some(p2p) = &mut self.p2p {
+                                p2p.broadcast(&P2PMessage::Block {
+                                    header: header.clone(),
+                                    transactions: block.transactions.clone(),
+                                    signature: block.signature.clone(),
+                                    pubkey: block.pubkey.clone(),
+                                });
+                            }
+                        }
+                    }
+            
+                /// Commit a mining result under a short write-lock.
+               /// Commit a mining result under a short write-lock.
+    /// If the chain has moved since the job was prepared, the result is
+    /// discarded and `Ok(false)` is returned.
+    /// Returns `Ok(true)` if the block/share was accepted.
+    pub fn commit_mining_result(
+        &mut self,
+        job: &MiningJob,
+        best_nonce: u64,
+        best_hash: Hash32,
+        found_block: bool,
+    ) -> Result<bool, String> {
+        // Guard: chain moved during mining → discard.
+        if self.chain_generation.load(AtomicOrdering::Relaxed) != job.generation {
+            return Ok(false);
+        }
+        if job.prev_hash != self.last_hash() {
+            return Ok(false);
+        }
+        if job.height != self.height + 1 {
+            return Ok(false);
+        }
+        if self.block_hashes.contains_key(&best_hash) {
+            return Ok(false);
+        }
+
+        // ---- Not a block: just record the share. ----
+        if !found_block {
+            if best_hash != [0xffu8; 32] {
+                let mut header = job.header.clone();
                 header.nonce = best_nonce;
                 let share = Share::new(self.miner_id, header, best_nonce, best_hash);
                 let _ = self.add_share(share);
-                // Do not print [SHARE] — it is visible in [STATUS] as shares=...
             }
-            // If neither block nor share — stay silent to avoid spam.
+            return Ok(true);
         }
-        
+
+        // ---- Block found: build and persist. ----
+        let mut header = job.header.clone();
+        header.nonce = best_nonce;
+
+        let txs = job.txs.clone();
+
+        // Collect non-coinbase txids to detect duplicates.
+        let mut block_txids = HashSet::new();
+        for tx in &txs {
+            if tx.is_coinbase() {
+                continue;
+            }
+            let txid = tx.txid(&mut self.argon2);
+            if !block_txids.insert(txid) {
+                return Err("Duplicate transaction in block".to_string());
+            }
+        }
+
+        // Pre-validate no double spend.
+        let block_preview = Block {
+            header: header.clone(),
+            transactions: txs.clone(),
+            signature: None,
+            pubkey: None,
+        };
+        if let Err(e) = crate::p2p::validate_block_no_double_spend(&block_preview) {
+            return Err(format!("Double spend in block: {}", e));
+        }
+
+        // Sign the block with our wallet.
+        let (signature, pubkey) = if let Some(wallet) = &self.wallet {
+            let block_hash = header.hash(&mut self.argon2);
+            (
+                wallet.sign_block(&block_hash).ok(),
+                Some(wallet.public_key.clone()),
+            )
+        } else {
+            (None, None)
+        };
+
+        let block = Block {
+            header: header.clone(),
+            transactions: txs,
+            signature,
+            pubkey,
+        };
+
+        // Save the share silently — visible in [STATUS] as shares=N.
+        let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
+        let _ = self.add_share(share);
+
+        let new_height = job.height;
+
+        // Persist the block.
+        if let Err(e) = self.storage.save_block(new_height, &block) {
+            return Err(format!("Failed to save block {}: {}", new_height, e));
+        }
+
+        // Update in-memory chain state.
+        let prev_ts = self
+            .blocks
+            .last()
+            .map(|b| b.timestamp)
+            .unwrap_or(header.timestamp);
+        self.last_block_time_secs = header.timestamp.saturating_sub(prev_ts);
+        self.last_nonce = best_nonce;
+
+        self.blocks.push(header.clone());
+        self.block_hashes.insert(best_hash, new_height);
+        self.timestamps.push(header.timestamp);
+        self.height = new_height;
+        self.cached_difficulty = None;
+        self.blocks_found += 1;
+
+        // Signal: our own chain has moved.
+        self.chain_generation.fetch_add(1, AtomicOrdering::Relaxed);
+        self.abort_mining.store(true, AtomicOrdering::Relaxed);
+
+        // Keep P2P state in sync.
+        if let Some(p2p) = self.p2p.as_mut() {
+            p2p.local_height = new_height;
+            p2p.local_best_hash = best_hash;
+            p2p.sync_manager.local_height = new_height;
+        }
+
+        // Update emission counter.
+        self.total_emitted = self.total_emitted.saturating_add(BLOCK_REWARD_LYT);
+        let _ = self.storage.save_state("total_emitted", &self.total_emitted);
+
+        // Apply the block to the UTXO set.
+        self.update_utxo_set(&block);
+
+        // Track txids included in this block.
+        let included_txids: HashSet<Txid> = block
+            .transactions
+            .iter()
+            .filter(|tx| !tx.is_coinbase())
+            .map(|tx| tx.txid(&mut self.argon2))
+            .collect();
+
+        for txid in &included_txids {
+            self.processed_txids.insert(*txid, self.height);
+        }
+
+        // Drop included txs from the mempool.
+        let old_mempool = std::mem::take(&mut self.mempool);
+        let mut new_mempool = Vec::with_capacity(old_mempool.len());
+        for tx in old_mempool {
+            let txid = tx.txid(&mut self.argon2);
+            if included_txids.contains(&txid) {
+                // included — drop from mempool
+            } else {
+                self.processed_txids.remove(&txid);
+                new_mempool.push(tx);
+            }
+        }
+        self.mempool = new_mempool;
+        let _ = self.storage.save_mempool(&self.mempool);
+
+        self.prune_processed_txids();
+
+        // Epoch transition.
+        if new_height % EPOCH_BLOCKS == 0 {
+            if let Err(e) = self.process_epoch_end() {
+                println!("⚠️ Epoch processing failed: {}", e);
+            }
+        }
+
+        let _ = self.storage.save_state("height", &self.height);
+        let _ = self.storage.save_state("epoch", &self.epoch);
+
+        // Checkpoint (if configured).
+        let interval = self.config.advanced.checkpoint_interval;
+        if interval > 0 && self.height % interval == 0 {
+            self.create_checkpoint();
+        }
+
+        // Log.
+        use colored::Colorize;
+        println!(
+            "\r\x1b[K{} {} {} {} {}",
+            "[BLOCK]".green().bold(),
+            format!("height={}", new_height).cyan(),
+            format!("hash={}", hex::encode(&best_hash[0..8])).yellow(),
+            format!("epoch={}", self.epoch).cyan(),
+            format!("nonce={}", best_nonce).cyan(),
+        );
+
+        // Broadcast the block to all peers.
+        if let Some(p2p) = &mut self.p2p {
+            p2p.broadcast(&P2PMessage::Block {
+                header: header.clone(),
+                transactions: block.transactions.clone(),
+                signature: block.signature.clone(),
+                pubkey: block.pubkey.clone(),
+            });
+        }
+
+        Ok(true)
+    }
+
     pub fn update_utxo_set(&mut self, block: &Block) {
         for tx in &block.transactions {
             let txid = tx.txid(&mut self.argon2);
@@ -2505,7 +2790,7 @@ impl Node {
 //   [108..116] nonce
 //   [116..120] epoch_index
 // ============================================================
-fn header_with_nonce_hash(
+pub fn header_with_nonce_hash(
     header_bytes: &[u8; 120],
     nonce: u64,
     argon2: &mut Argon2Cache,
