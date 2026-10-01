@@ -30,8 +30,8 @@ pub struct EquivocationProof {
     pub signature_2: Vec<u8>,
     pub timestamp: Timestamp,
     pub proven: bool,
-    // Оба блока, участвующие в доказательстве, хранятся внутри.
-    // Это позволяет верифицировать proof без обращения к side-chain хранилищу.
+    // Both blocks of the proof are stored inside, so the proof can be
+    // verified without access to any side-chain storage.
     #[serde(default)]
     pub block_1: Option<Block>,
     #[serde(default)]
@@ -46,50 +46,50 @@ impl EquivocationProof {
     pub fn verify(&self, argon2: &mut Argon2Cache) -> Result<bool, String> {
         let block1 = self.block_1.as_ref().ok_or("Block 1 missing in proof")?;
         let block2 = self.block_2.as_ref().ok_or("Block 2 missing in proof")?;
-    
-        // 1. Оба блока должны быть на одной высоте → одинаковый prev_hash.
+
+        // 1. Both blocks must be at the same height -> same prev_hash.
         if block1.header.prev_hash != block2.header.prev_hash {
             return Ok(false);
         }
-    
-        // 2. Оба блока должны быть из одной эпохи.
+
+        // 2. Both blocks must belong to the same epoch.
         if block1.header.epoch_index != block2.header.epoch_index {
             return Ok(false);
         }
-    
-        // 3. Хеши должны совпадать с полями proof.
+
+        // 3. Computed hashes must match the proof fields.
         let hash1 = block1.header.hash(argon2);
         let hash2 = block2.header.hash(argon2);
-    
+
         if hash1 != self.block_hash_1 || hash2 != self.block_hash_2 {
             return Ok(false);
         }
-    
-        // 4. Блоки должны быть разными.
+
+        // 4. The two blocks must be different.
         if hash1 == hash2 {
             return Ok(false);
         }
-    
-        // 5. PoW обоих блоков должен быть валиден.
+
+        // 5. PoW of both blocks must be valid.
         if !block1.header.difficulty.is_met_by(&hash1) {
             return Ok(false);
         }
         if !block2.header.difficulty.is_met_by(&hash2) {
             return Ok(false);
         }
-    
-        // 6. extract_miner_id_from_block проверяет pubkey, signature и подпись.
+
+        // 6. extract_miner_id_from_block checks pubkey, signature and PoW.
         let miner_id_from_block1 = Self::extract_miner_id_from_block(block1, argon2)?;
         let miner_id_from_block2 = Self::extract_miner_id_from_block(block2, argon2)?;
-    
+
         if miner_id_from_block1 != miner_id_from_block2 {
             return Ok(false);
         }
-    
+
         if miner_id_from_block1 != self.miner_id {
             return Ok(false);
         }
-    
+
         Ok(true)
     }
 
@@ -97,20 +97,18 @@ impl EquivocationProof {
         block: &Block,
         argon2: &mut Argon2Cache,
     ) -> Result<MinerId, String> {
-        let pk_bytes = block.pubkey.as_ref()
-            .ok_or("Block has no pubkey")?;
-        let sig = block.signature.as_ref()
-            .ok_or("Block has no signature")?;
-        let pk = PublicKey::from_slice(pk_bytes)
-            .map_err(|e| format!("Invalid pubkey: {}", e))?;
-    
+        let pk_bytes = block.pubkey.as_ref().ok_or("Block has no pubkey")?;
+        let sig = block.signature.as_ref().ok_or("Block has no signature")?;
+        let pk = PublicKey::from_slice(pk_bytes).map_err(|e| format!("Invalid pubkey: {}", e))?;
+
         let hash = block.header.hash(argon2);
         if !Wallet::verify_signature(pk_bytes, sig, &hash) {
             return Err("Invalid block signature".to_string());
         }
-    
+
         Ok(Wallet::miner_id_from_pubkey(&pk))
     }
+
     pub fn execute_slash(
         &self,
         storage: &ProductionStorage,
@@ -144,12 +142,12 @@ impl EquivocationProof {
     }
 
     pub fn from_blocks(block1: &Block, block2: &Block, height: Height) -> Result<Self, String> {
-        let mut argon2 = Argon2Cache::new(100);
+        let mut argon2 = Argon2Cache::new(ARGON2_CACHE_SIZE);
         let miner_id = Self::extract_miner_id_from_block(block1, &mut argon2)?;
-    
+
         let hash1 = block1.header.hash(&mut argon2);
         let hash2 = block2.header.hash(&mut argon2);
-    
+
         Ok(Self {
             miner_id,
             block_height: height,
@@ -163,8 +161,8 @@ impl EquivocationProof {
             block_2: Some(block2.clone()),
         })
     }
-} 
-   
+}
+
 #[derive(Debug, Clone)]
 pub struct SlashingPool {
     pub pending_slashes: Vec<EquivocationProof>,
@@ -186,7 +184,7 @@ impl SlashingPool {
             return;
         }
 
-        // №5: дедупликация по (miner_id, block_hash_1, block_hash_2).
+        // Deduplicate by (miner_id, block_hash_1, block_hash_2).
         let duplicate = self.pending_slashes.iter().any(|p| {
             p.miner_id == proof.miner_id
                 && p.block_hash_1 == proof.block_hash_1
@@ -206,7 +204,7 @@ impl SlashingPool {
     ) -> Result<Vec<SlashRecord>, String> {
         let mut results = Vec::new();
 
-        // Забираем pending, чтобы не держать заимствование self.
+        // Take pending to release the borrow on self.
         let proofs = std::mem::take(&mut self.pending_slashes);
 
         for proof in proofs {
@@ -214,7 +212,7 @@ impl SlashingPool {
                 continue;
             }
 
-            // №4: ошибка на одном доказательстве не должна рвать весь цикл.
+            // One bad proof must not break the whole loop.
             match proof.verify(argon2) {
                 Ok(true) => match proof.execute_slash(storage, current_height) {
                     Ok(record) => {
@@ -230,7 +228,7 @@ impl SlashingPool {
                     }
                 },
                 Ok(false) => {
-                    // Доказательство не подтвердилось — просто отбрасываем.
+                    // Proof is invalid — just drop it.
                 }
                 Err(e) => {
                     eprintln!(
@@ -284,34 +282,18 @@ pub fn calculate_poci(
         x
     }
 
-    // ---- shares ----
-    let shares_sqrt: Vec<u64> = miners.values().map(|m| isqrt(m.shares)).collect();
-    let max_shares_sqrt = shares_sqrt.iter().copied().max().unwrap_or(0).max(1);
+    // ---- Fixed maxima (constants) ----
+    //
+    // IMPORTANT: previously these were derived from the miner set
+    // (max over all miners). That breaks consensus: different nodes
+    // see different miner sets, produce different norms and different
+    // rewards -> chain fork. They MUST be constants.
 
-    // ---- loyalty ----
-    let loyalty_values: Vec<u64> = miners
-        .values()
-        .map(|m| loyalty.get(&m.miner_id).map(|l| l.value).unwrap_or(0))
-        .collect();
-    let max_loyalty = loyalty_values.iter().copied().max().unwrap_or(0).max(1);
-
-    // ---- bond (только валидные для PoCI) ----
-    let bond_sqrt: Vec<u64> = miners
-        .values()
-        .filter_map(|m| {
-            bonds.get(&m.miner_id).and_then(|b| {
-                if b.is_active(current_height) && b.amount >= MINIMUM_BOND_LYT {
-                    Some(isqrt(b.amount))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-    let max_bond_sqrt = bond_sqrt.iter().copied().max().unwrap_or(0).max(1);
+    let max_shares_sqrt = isqrt(MAX_SHARES_PER_MINER_PER_EPOCH).max(1);
+    let max_loyalty = MAX_LOYALTY_VALUE.max(1);
+    let max_bond_sqrt = isqrt(MAX_BOND_LYT).max(1);
 
     let mut results: Vec<PoCIResult> = Vec::new();
-    let mut total_poci: u128 = 0;
 
     for (miner_id, data) in miners {
         let bond_amount = bonds.get(miner_id).map(|b| b.amount).unwrap_or(0);
@@ -322,18 +304,22 @@ pub fn calculate_poci(
             .unwrap_or(false);
 
         let share_norm: u64 = if data.shares > 0 {
-            ((isqrt(data.shares) as u128 * POCI_SCALE as u128) / max_shares_sqrt as u128) as u64
+            let s = (isqrt(data.shares) as u128 * POCI_SCALE as u128) / max_shares_sqrt as u128;
+            s.min(POCI_SCALE as u128) as u64
         } else {
             0
         };
 
         let loyalty_val_u: u64 = loyalty.get(miner_id).map(|l| l.value).unwrap_or(0);
 
-        let loyalty_norm: u64 =
-            ((loyalty_val_u as u128 * POCI_SCALE as u128) / max_loyalty as u128) as u64;
+        let loyalty_norm: u64 = {
+            let l = (loyalty_val_u as u128 * POCI_SCALE as u128) / max_loyalty as u128;
+            l.min(POCI_SCALE as u128) as u64
+        };
 
         let bond_norm: u64 = if is_bond_valid {
-            ((isqrt(bond_amount) as u128 * POCI_SCALE as u128) / max_bond_sqrt as u128) as u64
+            let b = (isqrt(bond_amount) as u128 * POCI_SCALE as u128) / max_bond_sqrt as u128;
+            b.min(POCI_SCALE as u128) as u64
         } else {
             0
         };
@@ -342,8 +328,6 @@ pub fn calculate_poci(
             + POCI_WEIGHT_LOYALTY as u128 * loyalty_norm as u128
             + POCI_WEIGHT_BOND as u128 * bond_norm as u128)
             / POCI_SCALE as u128) as u64;
-
-        total_poci += poci_val as u128;
 
         results.push(PoCIResult {
             miner_id: *miner_id,
@@ -355,9 +339,5 @@ pub fn calculate_poci(
         });
     }
 
-    // ---- rewards ----
-    // ---- rewards ----
-    // NOTE: Расчёт reward перенесён в node.rs::process_epoch_end.
-    // Здесь считаем только PoCI. Поле reward остаётся 0 — его заполнит caller.
     results
 }

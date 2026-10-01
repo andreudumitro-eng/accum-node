@@ -48,6 +48,27 @@ pub const POCI_WEIGHT_SHARES: u64 = 600_000_000;  // 0.6
 pub const POCI_WEIGHT_LOYALTY: u64 = 200_000_000; // 0.2
 pub const POCI_WEIGHT_BOND: u64 = 200_000_000;    // 0.2
 
+// ============================================================
+// PoCI normalization constants
+// ============================================================
+//
+// These maxima are used in `calculate_poci` for normalization.
+// They MUST be constants (not derived from the miner set),
+// otherwise different nodes will compute different norms
+// and produce different rewards -> chain fork.
+
+/// Maximum theoretical loyalty value.
+///
+/// One year = 365 epochs. Doubled with a safety margin.
+/// Used to normalize `loyalty` in PoCI.
+pub const MAX_LOYALTY_VALUE: u64 = 730;
+
+/// Maximum bond amount for normalization (in LYT).
+///
+/// Bonds above this value are clamped to 1.0 in PoCI.
+/// 1000 ACM = 10_000_000_000 LYT — a reasonable mainnet maximum.
+pub const MAX_BOND_LYT: u64 = 10_000_000_000;
+
 pub const LOYALTY_DECAY_FACTOR: f64 = 0.7;
 pub const LOYALTY_GRACE_PERIOD: u32 = 3;
 pub const LOYALTY_GRACE_DECAY_FACTOR: f64 = 0.5;
