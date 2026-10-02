@@ -1067,6 +1067,33 @@ impl SyncManager {
                     // Not an error: we've seen it.
                     accepted += 1;
                 }
+                Err(AcceptError::PrevHashMismatch { .. }) => {
+                    // Possible fork — try to switch to the competing branch.
+                    match node.try_fork_switch(block) {
+                        Ok(true) => {
+                            // Reorg succeeded — the block is now part of our chain.
+                            accepted += 1;
+                        }
+                        Ok(false) => {
+                            // Not a fork we can handle now (deeper than 1 block).
+                            // Stop the batch and let the caller decide.
+                            last_error = Some(AcceptError::PrevHashMismatch {
+                                expected: node.last_hash(),
+                                got: block.header.prev_hash,
+                                height: node.height + 1,
+                            });
+                            break;
+                        }
+                        Err(e) => {
+                            // Reorg failed — record and stop.
+                            last_error = Some(AcceptError::Storage(format!(
+                                "fork switch failed: {}",
+                                e
+                            )));
+                            break;
+                        }
+                    }
+                }
                 Err(e) => {
                     last_error = Some(e);
                     break;
