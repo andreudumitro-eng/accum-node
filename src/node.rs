@@ -162,6 +162,12 @@ pub struct Node {
     /// Monotonic counter of chain version.
     /// Incremented whenever the tip changes.
     pub chain_generation: Arc<AtomicU64>,
+    
+    /// Alternative chain branches.
+    /// Key: hash of the **parent** block (fork point).
+    /// Value: blocks built on top of that parent.
+    /// Used by the fork-choice logic to store competing branches.
+    pub forks: HashMap<Hash32, Vec<Block>>,
 }
 
 impl Node {
@@ -230,6 +236,7 @@ impl Node {
             cached_difficulty: None,
             abort_mining: Arc::new(AtomicBool::new(false)),
             chain_generation: Arc::new(AtomicU64::new(0)),
+            forks: HashMap::new(),
         };
         println!("🔧 [10] Node struct created");
 
@@ -1454,6 +1461,46 @@ impl Node {
                             Err(AcceptError::AlreadyKnown) => {
                                 // Silent — we already have it.
                             }
+                            Err(AcceptError::PrevHashMismatch { .. }) => {
+                                // Possible fork — try to switch.
+                                match self.try_fork_switch(&block) {
+                                    Ok(true) => {
+                                        // Reorg succeeded.
+                                        let hash = block.header.hash(&mut self.argon2);
+                                        let new_height = self.height;
+
+                                        if let Some(p2p) = self.p2p.as_mut() {
+                                            p2p.local_height = new_height;
+                                            p2p.local_best_hash = hash;
+                                            p2p.sync_manager.local_height = new_height;
+
+                                            let msg = P2PMessage::Block {
+                                                header: block.header.clone(),
+                                                transactions: block.transactions.clone(),
+                                                signature: block.signature.clone(),
+                                                pubkey: block.pubkey.clone(),
+                                            };
+
+                                            for (peer_addr, peer) in p2p.peers.iter_mut() {
+                                                if *peer_addr != addr && !peer.is_banned() {
+                                                    let _ = peer.send_message(&msg);
+                                                }
+                                            }
+                                        }
+
+                                        println!(
+                                            "🔀 Reorg accepted block, new height: {}",
+                                            new_height
+                                        );
+                                    }
+                                    Ok(false) => {
+                                        // Not a fork we can handle now — stashed.
+                                    }
+                                    Err(e) => {
+                                        eprintln!("❌ Fork switch failed: {}", e);
+                                    }
+                                }
+                            }
                             Err(e) => {
                                 let is_benign = !e.is_attack();
                                 println!("⚠️ [accept_block] {}", e.describe());
@@ -1813,6 +1860,163 @@ impl Node {
 
         Ok(())
     }
+
+    /// Try to switch to a competing branch when a block does not extend
+    /// our current tip.
+    ///
+    /// Currently handles **single-block reorg** only:
+    /// - `block.prev_hash` must be a known block in our chain.
+    /// - The competing branch must be exactly one block longer than ours
+    ///   from the fork point.
+    /// - We compare block difficulty; if the competing block is heavier,
+    ///   we roll back our fork-point+1 block and apply the new one.
+    ///
+    /// For deeper forks (multi-block), returns `Ok(false)` — the block is
+    /// stashed in `self.forks` for later processing (P9.3).
+    pub fn try_fork_switch(&mut self, block: &Block) -> Result<bool, String> {
+        // 1. Compute the hash of the incoming block.
+        let block_hash = block.header.hash(&mut self.argon2);
+
+        // 2. Already known?
+        if self.block_hashes.contains_key(&block_hash) {
+            return Ok(false);
+        }
+
+        // 3. Find the fork point — the height of `block.prev_hash` in our chain.
+        let fork_height = match self.block_hashes.get(&block.header.prev_hash) {
+            Some(h) => *h,
+            None => {
+                // Fork point unknown — deeper than we can handle now.
+                // Stash and return.
+                self.forks
+                    .entry(block.header.prev_hash)
+                    .or_default()
+                    .push(block.clone());
+                return Ok(false);
+            }
+        };
+
+        // 4. If the fork point is our tip — it's not a fork, just a normal block.
+        if fork_height == self.height {
+            return Ok(false);
+        }
+
+        // 5. We only handle single-block reorg here: the fork point must be
+        //    exactly our tip - 1.
+        if fork_height + 1 != self.height {
+            // Deeper fork — stash for P9.3.
+            self.forks
+                .entry(block.header.prev_hash)
+                .or_default()
+                .push(block.clone());
+            return Ok(false);
+        }
+
+        // 6. Get our block at `height` to compare against.
+        let our_block = self
+            .storage
+            .get_block(self.height)?
+            .ok_or_else(|| "Our block at tip not found".to_string())?;
+        let our_hash = our_block.header.hash(&mut self.argon2);
+        let our_diff = our_block.header.difficulty.to_difficulty();
+        let new_diff = block.header.difficulty.to_difficulty();
+
+        // 7. Is the new block heavier? If not — ignore.
+        if new_diff <= our_diff {
+            return Ok(false);
+        }
+
+        println!(
+            "🔀 [fork] Reorg: replacing block {} ({}) with new block ({})",
+            self.height,
+            hex::encode(&our_hash[0..8]),
+            hex::encode(&block_hash[0..8]),
+        );
+
+        // ---- Roll back our tip ----
+
+        // 7a. Remove block from storage.
+        if let Err(e) = self.storage.delete_block(self.height) {
+            return Err(format!("delete_block({}) failed: {}", self.height, e));
+        }
+
+        // 7b. Undo UTXO changes for our block.
+        self.rollback_utxo_set(&our_block);
+
+        // 7c. Remove from in-memory chain state.
+        self.blocks.pop();
+        self.timestamps.pop();
+        self.block_hashes.remove(&our_hash);
+        self.height -= 1;
+        self.cached_difficulty = None;
+
+        // 7d. Persist height.
+        let _ = self.storage.save_state("height", &self.height);
+
+        // ---- Apply the new block ----
+        match self.accept_block(block) {
+            Ok(()) => {
+                println!(
+                    "🔀 [fork] Reorg complete. New height: {}",
+                    self.height
+                );
+                Ok(true)
+            }
+            Err(e) => {
+                // If the new block fails, we've already rolled back our block.
+                // This is a critical inconsistency — log loudly.
+                eprintln!(
+                    "❌ [fork] Rolled back our block but failed to apply new one: {}",
+                    e.describe()
+                );
+                Err(format!("Reorg failed: {}", e.describe()))
+            }
+        }
+    }
+
+    /// Undo UTXO changes made by a block.
+    /// Used during chain rollback.
+    /// - Spend: re-create the UTXOs that were consumed.
+    /// - Outputs: delete the UTXOs that were created.
+    fn rollback_utxo_set(&mut self, block: &Block) {
+        for tx in &block.transactions {
+            let txid = tx.txid(&mut self.argon2);
+
+            // Delete outputs created by this tx.
+            for (i, _output) in tx.outputs.iter().enumerate() {
+                let outpoint = (txid, i as u32);
+                if let Err(e) = self.storage.delete_utxo(&outpoint) {
+                    eprintln!(
+                        "⚠️ rollback: delete_utxo({}) failed: {}",
+                        hex::encode(&txid[0..8]),
+                        e
+                    );
+                }
+            }
+
+            // Re-create inputs consumed by this tx.
+            for input in &tx.inputs {
+                if input.is_coinbase() {
+                    continue;
+                }
+                // We do not have the original TxOut here in general.
+                // For bond inputs this is impossible to restore exactly
+                // without the original output data.
+                //
+                // NOTE: full UTXO rollback requires storing spent outputs
+                // alongside blocks. For now we log a warning. A production
+                // implementation must persist undo data per block.
+                //
+                // This is a known limitation of P9.2.
+                eprintln!(
+                    "⚠️ rollback: cannot restore spent UTXO {}:{} (no undo data)",
+                    hex::encode(&input.prev_txid[0..8]),
+                    input.prev_index,
+                );
+            }
+        }
+    }
+
 
     pub fn prepare_mining_job(&mut self) -> Result<MiningJob, String> {
         let generation = self.chain_generation.load(AtomicOrdering::Relaxed);

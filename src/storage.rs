@@ -127,6 +127,16 @@ impl ProductionStorage {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+    
+        /// Delete a block at the given height.
+    /// Used during chain reorganisation when rolling back the local chain.
+    pub fn delete_block(&self, height: Height) -> Result<(), String> {
+        let key = height.to_be_bytes();
+        self.db
+            .delete_cf(self.cf_handle(CF_BLOCKS), key)
+            .map_err(|e| format!("delete_block({}): {}", height, e))?;
+        Ok(())
+    }
 
     pub fn get_block(&self, height: Height) -> Result<Option<Block>, String> {
         let key = height.to_be_bytes();
