@@ -774,6 +774,11 @@ impl SyncManager {
     }
 
     pub fn needs_sync(&self) -> bool {
+        // Already syncing — no need to start a new session.
+        if self.sync_in_progress {
+            return false;
+        }
+
         let current_height = self.current_height();
         let best_peer_height = self
             .peers
@@ -813,6 +818,10 @@ impl SyncManager {
 
         self.sync_in_progress = true;
         self.last_sync_attempt = current_timestamp();
+        
+        // Reset the throttle so the new session can issue its first
+        // GetBlocks request immediately.
+        self.last_request_time = 0;
 
         println!(
             "🔄 Starting sync from height {} to {} with peer {}...",

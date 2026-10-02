@@ -1143,56 +1143,58 @@ impl Node {
             }
         }
 
-        // 5. Request blocks from peer.
+                        // 5. Request blocks from peer.
+        // Throttle is now handled entirely inside SyncManager
+        // (last_request_time). Do not double-throttle here.
         if let Some(p2p) = self.p2p.as_mut() {
-            let now = current_timestamp();
-            if now - self.last_sync_request_time >= 2 {
-                let session_data = p2p.sync_manager.active_session.as_ref().map(|session| {
-                    (
-                        session.peer_id,
-                        session.current_height,
-                        session.target_height,
-                        session.status.clone(),
-                    )
-                });
+            let session_data = p2p.sync_manager.active_session.as_ref().map(|session| {
+                (
+                    session.peer_id,
+                    session.current_height,
+                    session.target_height,
+                    session.status.clone(),
+                )
+            });
 
-                if let Some((peer_id, current_height, target_height, status)) = session_data {
-                    if status == SyncStatus::Requesting {
-                        let from_height = current_height + 1;
-                        let to_height = (from_height + SYNC_BATCH_SIZE - 1).min(target_height);
+            if let Some((peer_id, current_height, target_height, status)) = session_data {
+                if status == SyncStatus::Requesting {
+                    let from_height = current_height + 1;
+                    let to_height = (from_height + SYNC_BATCH_SIZE - 1).min(target_height);
 
-                        if from_height <= to_height {
-                            match p2p
-                                .sync_manager
-                                .request_blocks_from_peer(&peer_id, from_height)
-                            {
-                                Ok(msg) => {
-                                    self.last_sync_request_time = now;
-                                    // Send message directly to the peer.
-                                    for (peer_addr, peer) in p2p.peers.iter_mut() {
-                                        if peer.get_peer_id() == peer_id {
-                                            let _ = peer.send_message(&msg);
-                                            break;
-                                        }
-                                    }
-                                    if let Some(session) = p2p.sync_manager.active_session.as_mut()
-                                    {
-                                        session.status = SyncStatus::Receiving;
-                                        session.last_activity = now;
+                    if from_height <= to_height {
+                        let now = current_timestamp();
+                        match p2p
+                            .sync_manager
+                            .request_blocks_from_peer(&peer_id, from_height)
+                        {
+                            Ok(msg) => {
+                                // Send message directly to the peer.
+                                for (peer_addr, peer) in p2p.peers.iter_mut() {
+                                    if peer.get_peer_id() == peer_id {
+                                        let _ = peer.send_message(&msg);
+                                        break;
                                     }
                                 }
-                                Err(e) => {
-                                    println!("⚠️ Failed to request blocks: {}", e);
-                                    p2p.sync_manager.active_session = None;
-                                    p2p.sync_manager.sync_in_progress = false;
+                                if let Some(session) = p2p.sync_manager.active_session.as_mut() {
+                                    session.status = SyncStatus::Receiving;
+                                    session.last_activity = now;
                                 }
                             }
-                        } else {
-                            if let Some(session) = p2p.sync_manager.active_session.as_mut() {
-                                session.status = SyncStatus::Completed;
+                            Err(e) if e.contains("Too frequent") => {
+                                // Throttle. Do NOT reset the session —
+                                // the next tick will retry automatically.
+                            }
+                            Err(e) => {
+                                println!("⚠️ Failed to request blocks: {}", e);
+                                p2p.sync_manager.active_session = None;
                                 p2p.sync_manager.sync_in_progress = false;
-                                println!("✅ Sync completed at height {}", session.current_height);
                             }
+                        }
+                    } else {
+                        if let Some(session) = p2p.sync_manager.active_session.as_mut() {
+                            session.status = SyncStatus::Completed;
+                            p2p.sync_manager.sync_in_progress = false;
+                            println!("✅ Sync completed at height {}", session.current_height);
                         }
                     }
                 }
