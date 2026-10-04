@@ -638,6 +638,34 @@ impl SharePool {
     }
 
     pub fn new_epoch(&mut self) {
+        // Archive all current-epoch shares as SharePackets.
+        let mut packets: Vec<SharePacket> = Vec::new();
+        for shares in self.shares.values() {
+            for s in shares {
+                packets.push(SharePacket::from(s));
+            }
+        }
+    
+        // Canonical sort: (miner_id, hash).
+        packets.sort_by(|a, b| {
+            a.miner_id.cmp(&b.miner_id)
+                .then_with(|| a.hash.cmp(&b.hash))
+        });
+    
+        // Compute Merkle root over the canonical set.
+        let root = SharePool::compute_merkle_root(&packets);
+    
+        // Store archive + root for this (about-to-be-completed) epoch.
+        let archived_epoch = self.current_epoch;
+        self.archive.insert(archived_epoch, packets);
+        self.epoch_roots.insert(archived_epoch, root);
+    
+        // Prune old epochs from archive.
+        let min_keep = archived_epoch.saturating_sub(EPOCH_ARCHIVE_DEPTH);
+        self.archive.retain(|e, _| *e >= min_keep);
+        self.epoch_roots.retain(|e, _| *e >= min_keep);
+    
+        // Clear current epoch.
         self.shares.clear();
         self.share_count.clear();
         self.share_hashes.clear();
@@ -646,6 +674,37 @@ impl SharePool {
         self.memory_used = 0;
         self.current_epoch += 1;
         self.created_at = current_timestamp();
+    }
+    
+    /// Compute Merkle root from a canonical (sorted) list of SharePackets.
+    pub fn compute_merkle_root(shares: &[SharePacket]) -> Hash32 {
+        if shares.is_empty() {
+            return [0u8; 32];
+        }
+    
+        let mut hashes: Vec<Hash32> = shares
+            .iter()
+            .map(|s| s.canonical_hash())
+            .collect();
+    
+        while hashes.len() > 1 {
+            let mut next = Vec::with_capacity((hashes.len() + 1) / 2);
+            for chunk in hashes.chunks(2) {
+                let mut data = Vec::with_capacity(64);
+                data.extend_from_slice(&chunk[0]);
+                if chunk.len() > 1 {
+                    data.extend_from_slice(&chunk[1]);
+                } else {
+                    data.extend_from_slice(&chunk[0]);
+                }
+                let d = Sha256::digest(&data);
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&d);
+                next.push(arr);
+            }
+            hashes = next;
+        }
+        hashes[0]
     }
 
     pub fn invalid_ratio(&self, miner_id: &MinerId) -> f64 {

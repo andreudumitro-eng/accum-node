@@ -4,7 +4,7 @@ use crate::block::{Block, BlockHeader, Transaction};
 use crate::consensus::EquivocationProof;
 use crate::constants::*;
 use crate::crypto::Argon2Cache;
-use crate::miner::Share;
+use crate::miner::{Share, SharePacket};
 use crate::network::DDoSProtection;
 use crate::storage::{Checkpoint, ProductionStorage};
 use crate::node::Node;
@@ -127,6 +127,55 @@ pub enum P2PMessage {
         pubkey: Vec<u8>,
         signature: Vec<u8>,
         timestamp: Timestamp,
+    },
+
+    // ============================================================
+    // Epoch commit + share sync messages (v3.2+)
+    // ============================================================
+
+    /// Request shares for a specific epoch.
+    /// Used during epoch commit resolution when the local node
+    /// detects a mismatch between its own Merkle root and the peer's.
+    GetShares {
+        /// Epoch number the shares belong to.
+        epoch: u32,
+        /// Index of the first share to return (for pagination).
+        offset: u32,
+        /// Maximum number of shares to return (capped at MAX_SHARES_PER_REPLY).
+        max_count: u32,
+        /// Optional filter: only return shares from this miner.
+        miner_id: Option<MinerId>,
+    },
+
+    /// Response to GetShares containing a batch of shares.
+    ShareReply {
+        /// Epoch number the shares belong to.
+        epoch: u32,
+        /// The shares being returned (at most MAX_SHARES_PER_REPLY).
+        shares: Vec<SharePacket>,
+        /// Total number of shares available for this epoch on the peer.
+        /// Used by the requester to know how many more to fetch.
+        total_available: u32,
+    },
+
+    /// Request a Merkle proof for a specific share.
+    /// Used to verify a single share without downloading the whole epoch.
+    GetShareProof {
+        /// Epoch number the share belongs to.
+        epoch: u32,
+        /// Canonical hash of the share (SharePacket::canonical_hash).
+        share_hash: Hash32,
+    },
+
+    /// Merkle proof for a single share.
+    ShareProof {
+        /// Epoch number the share belongs to.
+        epoch: u32,
+        /// The share itself.
+        share: SharePacket,
+        /// Merkle path from the share's leaf to the epoch root.
+        /// Empty if the share is the only one (root == leaf).
+        merkle_path: Vec<Hash32>,
     },
 }
 
@@ -428,6 +477,9 @@ pub struct P2PNode {
     pub local_best_hash: Hash32,
     pub local_peer_id: PeerId,
     pub bootnodes: Vec<String>,
+    pub received_commits: HashMap<(u32, Hash32), HashSet<PeerId>>,
+    pub agreed_commits: HashMap<u32, Hash32>,
+    pub pending_share_requests: HashMap<(PeerId, u32), u32>,
 }
 
 impl P2PNode {
@@ -453,6 +505,9 @@ impl P2PNode {
             local_best_hash: [0; 32],
             local_peer_id,
             bootnodes,
+            received_commits: HashMap::new(),
+            agreed_commits: HashMap::new(),
+            pending_share_requests: HashMap::new(),
         })
     }
 

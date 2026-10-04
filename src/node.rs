@@ -8,7 +8,7 @@ use crate::crypto::Argon2Cache;
 use crate::difficulty::adjust_difficulty;
 use crate::epoch_commit::EpochCommit;
 use crate::genesis::create_genesis_block;
-use crate::miner::{LoyaltyData, MinerData, Share, SharePool};
+use crate::miner::{LoyaltyData, MinerData, Share, SharePacket, SharePool};
 use crate::network::{AttackDetection, DDoSProtection};
 use crate::p2p::{
     validate_block_coinbase, validate_block_no_double_spend, P2PMessage, P2PNode, SyncManager,
@@ -168,6 +168,8 @@ pub struct Node {
     /// Value: blocks built on top of that parent.
     /// Used by the fork-choice logic to store competing branches.
     pub forks: HashMap<Hash32, Vec<Block>>,
+    pub pending_rewards: HashMap<u32, Vec<(MinerId, u64)>>,
+    pub last_resync_at: HashMap<u32, Timestamp>,
 }
 
 impl Node {
@@ -237,6 +239,8 @@ impl Node {
             abort_mining: Arc::new(AtomicBool::new(false)),
             chain_generation: Arc::new(AtomicU64::new(0)),
             forks: HashMap::new(),
+            pending_rewards: HashMap::new(),
+            last_resync_at: HashMap::new(),
         };
         println!("🔧 [10] Node struct created");
 
@@ -503,6 +507,25 @@ impl Node {
             self.bonds.len(),
             self.loyalty.len()
         );
+
+        // Load share archives for the last EPOCH_ARCHIVE_DEPTH epochs.
+        println!("📂 Loading share archives...");
+        let min_epoch = self.epoch.saturating_sub(EPOCH_ARCHIVE_DEPTH);
+        let mut archive_count = 0usize;
+        for e in min_epoch..=self.epoch {
+            if let Ok(shares) = self.storage.load_shares_archive(e) {
+                if !shares.is_empty() {
+                    let root_key = format!("epoch_share_root_{}", e);
+                    if let Ok(Some(root)) = self.storage.get_state::<Hash32>(&root_key) {
+                        self.share_pool.epoch_roots.insert(e, root);
+                    }
+                    self.share_pool.archive.insert(e, shares);
+                    archive_count += 1;
+                }
+            }
+        }
+        println!("   ✅ Share archives loaded: {}", archive_count);
+
         Ok(())
     }
 
@@ -650,6 +673,50 @@ impl Node {
         } else {
             [0; 32]
         }
+    }
+
+        /// Compute Merkle root of a set of SharePackets.
+    /// Shares must be sorted by (miner_id, hash) before calling — the
+    /// canonical order is enforced by the caller.
+    pub fn compute_share_merkle_root(shares: &[SharePacket]) -> Hash32 {
+        if shares.is_empty() {
+            return [0u8; 32];
+        }
+
+        let mut hashes: Vec<Hash32> = shares
+            .iter()
+            .map(|s| s.canonical_hash())
+            .collect();
+
+        while hashes.len() > 1 {
+            let mut next = Vec::with_capacity((hashes.len() + 1) / 2);
+            for chunk in hashes.chunks(2) {
+                let mut data = Vec::with_capacity(64);
+                data.extend_from_slice(&chunk[0]);
+                if chunk.len() > 1 {
+                    data.extend_from_slice(&chunk[1]);
+                } else {
+                    data.extend_from_slice(&chunk[0]);
+                }
+                let d = Sha256::digest(&data);
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&d);
+                next.push(arr);
+            }
+            hashes = next;
+        }
+        hashes[0]
+    }
+
+    /// Validate an incoming SharePacket against the current difficulty.
+    /// Returns Ok(()) if the share is well-formed and its PoW is valid.
+    pub fn validate_share_packet(
+        &mut self,
+        share: &SharePacket,
+        expected_epoch: u32,
+    ) -> Result<(), &'static str> {
+        let target_share = self.last_difficulty().share_target();
+        share.validate(&target_share, expected_epoch, &mut self.argon2)
     }
 
     fn last_difficulty(&self) -> Target {
@@ -1265,6 +1332,11 @@ impl Node {
             }
 
             fn handle_p2p_message(&mut self, msg: P2PMessage, addr: SocketAddr) {
+                // Snapshot difficulty BEFORE borrowing self.p2p mutably.
+                // Used by ShareReply / GetShareProof branches.
+                let snapshot_target_share = self.last_difficulty().share_target();
+                let snapshot_epoch = self.epoch;
+        
                 // Take a snapshot of data we may need while not holding a mutable
                 // borrow on self.p2p. All node-side work uses `self` directly
                 // because we are already under the write-lock in tick().
@@ -1517,7 +1589,82 @@ impl Node {
                             }
                         }
                     }
-                    P2PMessage::EpochCommit { .. } => {}
+                    P2PMessage::EpochCommit { epoch, commit_root, timestamp: _ } => {
+                        let peer_id = peer.get_peer_id();
+
+                        if epoch + EPOCH_ARCHIVE_DEPTH < self.epoch {
+                            return;
+                        }
+
+                        // Record vote (local to p2p, already borrowed as `p2p`).
+                        p2p.received_commits
+                            .entry((epoch, commit_root))
+                            .or_insert_with(HashSet::new)
+                            .insert(peer_id);
+
+                        let our_root = self.share_pool.epoch_roots.get(&epoch).copied();
+
+                        let our_root = match our_root {
+                            Some(r) => r,
+                            None => {
+                                println!(
+                                    "📥 EpochCommit #{} from {}: root={}... (we have none, requesting)",
+                                    epoch,
+                                    hex::encode(&peer_id[0..8]),
+                                    hex::encode(&commit_root[0..8]),
+                                );
+                                let msg = P2PMessage::GetShares {
+                                    epoch,
+                                    offset: 0,
+                                    max_count: MAX_SHARES_PER_REPLY,
+                                    miner_id: None,
+                                };
+                                let _ = peer.send_message(&msg);
+                                return;
+                            }
+                        };
+
+                        if our_root == commit_root {
+                            println!(
+                                "✅ EpochCommit #{} matches peer {}",
+                                epoch,
+                                hex::encode(&peer_id[0..8]),
+                            );
+                            return;
+                        }
+
+                        let votes_us = p2p.received_commits
+                            .get(&(epoch, our_root))
+                            .map(|s| s.len())
+                            .unwrap_or(0);
+                        let votes_peer = p2p.received_commits
+                            .get(&(epoch, commit_root))
+                            .map(|s| s.len())
+                            .unwrap_or(0);
+
+                        println!(
+                            "⚠️ EpochCommit #{} mismatch: ours={}... ({} votes), peer={}... ({} votes)",
+                            epoch,
+                            hex::encode(&our_root[0..8]),
+                            votes_us,
+                            hex::encode(&commit_root[0..8]),
+                            votes_peer,
+                        );
+
+                        if votes_peer >= votes_us + COMMIT_SWITCH_MARGIN {
+                            println!(
+                                "🔄 Switching to peer commit for epoch {} (majority)",
+                                epoch,
+                            );
+                            let msg = P2PMessage::GetShares {
+                                epoch,
+                                offset: 0,
+                                max_count: MAX_SHARES_PER_REPLY,
+                                miner_id: None,
+                            };
+                            let _ = peer.send_message(&msg);
+                        }
+                    }
                     P2PMessage::GetMempool => {}
                     P2PMessage::Mempool(_txs) => {}
                     P2PMessage::Transaction(tx) => {
@@ -1666,6 +1813,115 @@ impl Node {
                                 payout_address
                             );
                         }
+                    }
+                    P2PMessage::GetShares { epoch, offset, max_count, miner_id } => {
+                        let max_count = max_count.min(MAX_SHARES_PER_REPLY);
+
+                        let (shares, total) = match self.share_pool.archive.get(&epoch) {
+                            Some(all) => {
+                                let filtered: Vec<SharePacket> = if let Some(mid) = miner_id {
+                                    all.iter().filter(|s| s.miner_id == mid).cloned().collect()
+                                } else {
+                                    all.clone()
+                                };
+                                let total = filtered.len() as u32;
+                                let start = offset as usize;
+                                let end = (start + max_count as usize).min(filtered.len());
+                                let slice = if start < filtered.len() {
+                                    filtered[start..end].to_vec()
+                                } else {
+                                    Vec::new()
+                                };
+                                (slice, total)
+                            }
+                            None => (Vec::new(), 0),
+                        };
+
+                        let _ = peer.send_message(&P2PMessage::ShareReply {
+                            epoch,
+                            shares,
+                            total_available: total,
+                        });
+                    }
+                    P2PMessage::ShareReply { epoch, shares, total_available } => {
+                        println!(
+                            "📥 ShareReply: {} shares for epoch {} (total available: {})",
+                            shares.len(),
+                            epoch,
+                            total_available,
+                        );
+
+                        // Use local Argon2 and snapshotted target — no self borrow.
+                        let mut argon2 = Argon2Cache::new(ARGON2_CACHE_SIZE);
+
+                        // 1. Validate each incoming share.
+                        let mut valid: Vec<SharePacket> = Vec::new();
+                        for s in &shares {
+                            match s.validate(&snapshot_target_share, epoch, &mut argon2) {
+                                Ok(()) => valid.push(s.clone()),
+                                Err(e) => {
+                                    println!(
+                                        "⚠️ Invalid share from {}: {}",
+                                        hex::encode(&s.miner_id[0..6]),
+                                        e
+                                    );
+                                }
+                            }
+                        }
+
+                        // 2. Merge into archive with de-duplication.
+                        let our_shares = self
+                            .share_pool
+                            .archive
+                            .entry(epoch)
+                            .or_insert_with(Vec::new);
+
+                        let mut added = 0usize;
+                        for s in valid {
+                            let dup = our_shares.iter().any(|x| {
+                                x.miner_id == s.miner_id && x.hash == s.hash
+                            });
+                            if !dup {
+                                our_shares.push(s);
+                                added += 1;
+                            }
+                        }
+
+                        // 3. Canonical sort: (miner_id, hash).
+                        our_shares.sort_by(|a, b| {
+                            a.miner_id.cmp(&b.miner_id)
+                                .then_with(|| a.hash.cmp(&b.hash))
+                        });
+
+                        // 4. Recompute Merkle root.
+                        let new_root = Node::compute_share_merkle_root(our_shares);
+                        let have = our_shares.len() as u32;
+                        self.share_pool.epoch_roots.insert(epoch, new_root);
+
+                        println!(
+                            "✅ Epoch {}: added {} shares, total {}, root={}...",
+                            epoch,
+                            added,
+                            have,
+                            hex::encode(&new_root[0..8]),
+                        );
+
+                        // 5. If peer has more — request the next batch.
+                        if have < total_available {
+                            let msg = P2PMessage::GetShares {
+                                epoch,
+                                offset: have,
+                                max_count: MAX_SHARES_PER_REPLY,
+                                miner_id: None,
+                            };
+                            let _ = peer.send_message(&msg);
+                        }
+                    }
+                    P2PMessage::GetShareProof { epoch, share_hash } => {
+                        let _ = (epoch, share_hash);
+                    }
+                    P2PMessage::ShareProof { epoch, share, merkle_path } => {
+                        let _ = (epoch, share, merkle_path);
                     }
                 }
             }
@@ -2771,11 +3027,41 @@ impl Node {
             .flatten()
             .unwrap_or([0u8; 32]);
 
+                // Archive current-epoch shares and compute the share-set Merkle root.
+        // `SharePool::new_epoch` snapshots shares into `archive` and stores
+        // the root in `epoch_roots[completed_epoch]` BEFORE clearing.
+        self.share_pool.new_epoch();
+                // Persist the archive to disk so it survives restarts.
+                if let Some(shares) = self.share_pool.archive.get(&completed_epoch) {
+                    if let Err(e) = self.storage.save_shares_archive(completed_epoch, shares) {
+                        println!("   ⚠️ Failed to save shares archive: {}", e);
+                    }
+                }
+
+        let share_root = self
+            .share_pool
+            .epoch_roots
+            .get(&completed_epoch)
+            .copied()
+            .unwrap_or([0u8; 32]);
+
+        println!(
+            "   🧾 Share root for epoch {}: {}...",
+            completed_epoch,
+            hex::encode(&share_root[0..8]),
+        );
+
+        // Persist the share root for this epoch so it survives restarts
+        // and can be served to peers via GetShares.
+        let _ = self.storage.save_state(
+            &format!("epoch_share_root_{}", completed_epoch),
+            &share_root,
+        );
+
+        // Save the full EpochCommit record (existing).
         self.save_epoch_commit(completed_epoch, previous_commit_hash);
 
-        self.share_pool.new_epoch();
         self.epoch = self.epoch.saturating_add(1);
-
         self.update_loyalty_for_epoch(completed_epoch, &poci_results);
         self.reset_miner_shares();
 

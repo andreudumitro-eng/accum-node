@@ -101,3 +101,25 @@ pub const SYNC_MAX_RETRIES: u32 = 3;
 pub const SYNC_RETRY_DELAY_SECS: u64 = 10;
 pub const MAX_BLOCKS_IN_RESPONSE: u32 = 500;
 pub const BLOCK_REQUEST_TIMEOUT_SECS: u64 = 30;
+
+// ============================================================
+// Epoch commit + share sync (v3.2+)
+// ============================================================
+
+/// How many past epochs of shares to keep in the archive.
+pub const EPOCH_ARCHIVE_DEPTH: u32 = 10;
+
+/// Maximum shares per single ShareReply message.
+pub const MAX_SHARES_PER_REPLY: u32 = 500;
+
+/// Minimum number of peer votes needed to treat a commit root as valid.
+pub const MIN_COMMIT_VOTES: usize = 3;
+
+/// How many more votes a peer root must have than ours to switch.
+pub const COMMIT_SWITCH_MARGIN: usize = 1;
+
+/// Maximum resync requests per peer per epoch.
+pub const MAX_RESYNC_REQUESTS_PER_PEER: u32 = 10;
+
+/// Timeout for a pending GetShares request (seconds).
+pub const SHARE_REQUEST_TIMEOUT_SECS: u64 = 30;

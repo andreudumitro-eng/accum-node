@@ -138,6 +138,31 @@ impl ProductionStorage {
         Ok(())
     }
 
+        /// Persist the share archive for an epoch.
+        pub fn save_shares_archive(
+            &self,
+            epoch: u32,
+            shares: &[crate::miner::SharePacket],
+        ) -> Result<(), String> {
+            let key = format!("epoch_shares_{}", epoch);
+            let data = bincode::serialize(shares)
+                .map_err(|e| format!("serialize shares: {}", e))?;
+            self.save_state(&key, &data)
+        }
+    
+        /// Load the share archive for an epoch.
+        pub fn load_shares_archive(
+            &self,
+            epoch: u32,
+        ) -> Result<Vec<crate::miner::SharePacket>, String> {
+            let key = format!("epoch_shares_{}", epoch);
+            match self.get_state::<Vec<u8>>(&key)? {
+                Some(data) => bincode::deserialize(&data)
+                    .map_err(|e| format!("deserialize shares: {}", e)),
+                None => Ok(Vec::new()),
+            }
+        }
+
     pub fn get_block(&self, height: Height) -> Result<Option<Block>, String> {
         let key = height.to_be_bytes();
         match self.db.get_cf(self.cf_handle(CF_BLOCKS), key) {
