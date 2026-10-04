@@ -16,7 +16,7 @@ pub type PeerId = [u8; 32];
 pub type Amount = u64;
 pub type EpochIndex = u32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Target(pub Hash32);
 
 impl Target {

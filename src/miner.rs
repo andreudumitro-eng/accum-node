@@ -249,6 +249,60 @@ impl Share {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct SharePacket {
+    pub miner_id: MinerId,
+    pub header: BlockHeader,
+    pub nonce: u64,
+    pub hash: Hash32,
+}
+
+impl From<&Share> for SharePacket {
+    fn from(s: &Share) -> Self {
+        Self {
+            miner_id: s.miner_id,
+            header: s.header.clone(),
+            nonce: s.nonce,
+            hash: s.hash,
+        }
+    }
+}
+
+impl SharePacket {
+    pub fn canonical_hash(&self) -> Hash32 {
+        let mut data = Vec::with_capacity(60);
+        data.extend_from_slice(&self.miner_id);
+        data.extend_from_slice(&self.hash);
+        let d = Sha256::digest(&data);
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&d);
+        arr
+    }
+
+    pub fn validate(
+        &self,
+        target_share: &Target,
+        expected_epoch: u32,
+        argon2: &mut Argon2Cache,
+    ) -> Result<(), &'static str> {
+        if self.header.epoch_index != expected_epoch {
+            return Err("Wrong epoch");
+        }
+        let prefilter = target_share.prefilter_target();
+        if !Argon2Cache::prefilter(&self.header.to_bytes(), self.nonce, &prefilter) {
+            return Err("Prefilter rejected");
+        }
+        let computed = self.header.hash_with_nonce(self.nonce, argon2);
+        if computed != self.hash {
+            return Err("Hash mismatch");
+        }
+        if !target_share.is_met_by(&self.hash) {
+            return Err("Target not met");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregatedShare {
     pub miner_id: MinerId,
@@ -452,6 +506,12 @@ pub struct SharePool {
     pub max_memory_bytes: usize,
     pub memory_used: usize,
     pub created_at: Timestamp,
+
+    /// Archived shares per completed epoch.
+    pub archive: HashMap<u32, Vec<SharePacket>>,
+
+    /// Merkle root of the share set for each completed epoch.
+    pub epoch_roots: HashMap<u32, Hash32>,
 }
 
 impl SharePool {
@@ -466,6 +526,8 @@ impl SharePool {
             max_memory_bytes: max_memory_mb * 1024 * 1024,
             memory_used: 0,
             created_at: current_timestamp(),
+            archive: HashMap::new(),
+            epoch_roots: HashMap::new(),
         }
     }
 
