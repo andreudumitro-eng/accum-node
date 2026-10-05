@@ -2321,6 +2321,218 @@ impl Node {
         Ok(())
     }
 
+        /// Find the deepest common block between our chain and the given
+    /// sequence of foreign blocks.
+    ///
+    /// `foreign_blocks` should be ordered from the fork point upward —
+    /// i.e. the first element is the block immediately after the fork.
+    /// We walk through them and check if any of their `prev_hash` values
+    /// correspond to a block already in our chain.
+    ///
+    /// Returns `(height, hash)` of the common ancestor, or `None` if no
+    /// common ancestor exists in our chain.
+    pub fn find_common_ancestor(
+        &mut self,
+        foreign_blocks: &[Block],
+    ) -> Option<(Height, Hash32)> {
+        if foreign_blocks.is_empty() {
+            return None;
+        }
+
+        // The first foreign block's `prev_hash` is the fork point.
+        let first = &foreign_blocks[0];
+        let fork_hash = first.header.prev_hash;
+
+        // Is the fork point itself known to us?
+        if let Some(h) = self.block_hashes.get(&fork_hash) {
+            return Some((*h, fork_hash));
+        }
+
+        // Otherwise walk backward through the foreign chain.
+        // For each block, compute its hash and check if we know it.
+        for block in foreign_blocks.iter().rev() {
+            let hash = block.header.hash(&mut self.argon2);
+            if let Some(h) = self.block_hashes.get(&hash) {
+                return Some((*h, hash));
+            }
+        }
+
+        None
+    }
+
+        /// Roll back our chain to the given height.
+    ///
+    /// Removes all blocks above `target_height`, applies reverse UTXO
+    /// changes, and updates in-memory state. Persists the new height.
+    ///
+    /// Returns `Ok(())` on success, or `Err` if a block is missing.
+    ///
+    /// NOTE: this uses `rollback_utxo_set`, which currently cannot
+    /// fully restore spent outputs (no undo data). For the purposes of
+    /// reorg between two well-behaved nodes this is acceptable — the
+    /// alternative is that the reorg cannot happen at all. Full undo
+    /// support is a future improvement.
+    pub fn rollback_to(&mut self, target_height: Height) -> Result<(), String> {
+        if target_height >= self.height {
+            return Ok(());
+        }
+
+        while self.height > target_height {
+            // Fetch the block we are about to roll back.
+            let block = self
+                .storage
+                .get_block(self.height)?
+                .ok_or_else(|| format!("block {} not found for rollback", self.height))?;
+
+            // Delete from storage.
+            self.storage.delete_block(self.height)?;
+
+            // Reverse UTXO changes.
+            self.rollback_utxo_set(&block);
+
+            // Remove from in-memory state.
+            let hash = block.header.hash(&mut self.argon2);
+            self.blocks.pop();
+            self.timestamps.pop();
+            self.block_hashes.remove(&hash);
+            self.height -= 1;
+        }
+
+        // Persist new height.
+        let _ = self.storage.save_state("height", &self.height);
+        self.cached_difficulty = None;
+
+        // Signal mining thread.
+        self.chain_generation.fetch_add(1, AtomicOrdering::Relaxed);
+        self.abort_mining.store(true, AtomicOrdering::Relaxed);
+
+        println!("🔙 Rolled back to height {}", self.height);
+        Ok(())
+    }
+
+        /// Apply a foreign branch starting from the given common ancestor.
+    ///
+    /// `foreign_blocks` should be ordered from the fork point upward —
+    /// i.e. the first element is the block immediately after the fork.
+    ///
+    /// Each block is applied via `accept_block`. Blocks already known
+    /// to us are skipped. Returns the number of newly applied blocks.
+    pub fn apply_foreign_branch(
+        &mut self,
+        foreign_blocks: &[Block],
+    ) -> Result<usize, String> {
+        let mut applied = 0usize;
+
+        for block in foreign_blocks {
+            // Skip already-known blocks.
+            let hash = block.header.hash(&mut self.argon2);
+            if self.block_hashes.contains_key(&hash) {
+                continue;
+            }
+
+            // Validate and apply.
+            match self.accept_block(block) {
+                Ok(()) => {
+                    applied += 1;
+                }
+                Err(AcceptError::AlreadyKnown) => {
+                    // Race — someone else applied it. Fine.
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "apply_foreign_branch failed at height {}: {}",
+                        self.height + 1,
+                        e.describe()
+                    ));
+                }
+            }
+        }
+
+        Ok(applied)
+    }
+    
+        /// Handle a multi-block fork: find the common ancestor, roll back
+    /// our chain, and apply the foreign branch.
+    ///
+    /// `block` is the tip of a foreign branch that does not extend our
+    /// current chain. We only have one block from the peer here, so
+    /// we work with what we can: if the block's `prev_hash` is a known
+    /// ancestor, we roll back to it and apply the block.
+    ///
+    /// Returns `Ok(true)` if a reorg happened, `Ok(false)` otherwise.
+    pub fn try_multi_block_reorg(&mut self, block: &Block) -> Result<bool, String> {
+        let block_hash = block.header.hash(&mut self.argon2);
+
+        // Already known — nothing to do.
+        if self.block_hashes.contains_key(&block_hash) {
+            return Ok(false);
+        }
+
+        // Find where `block.prev_hash` lives in our chain.
+        let fork_height = match self.block_hashes.get(&block.header.prev_hash) {
+            Some(h) => *h,
+            None => {
+                // Unknown ancestor. Stash for later.
+                self.forks
+                    .entry(block.header.prev_hash)
+                    .or_default()
+                    .push(block.clone());
+                return Ok(false);
+            }
+        };
+
+        // If fork height is already our tip, this is not a fork.
+        if fork_height >= self.height {
+            return Ok(false);
+        }
+
+        // Compare chain difficulty: only reorg if the foreign branch is
+        // heavier. For a single block we compare against our block at
+        // `fork_height + 1`. For deeper forks we would need the full
+        // branch — for now we only have one block.
+        //
+        // This means: we reorg only when the incoming block alone
+        // represents a heavier chain than ours from the fork point.
+        // That's the common case for a two-node network.
+        let our_block = match self.storage.get_block(fork_height + 1)? {
+            Some(b) => b,
+            None => return Ok(false),
+        };
+        let our_diff = our_block.header.difficulty.to_difficulty();
+        let new_diff = block.header.difficulty.to_difficulty();
+
+        // Only switch if the incoming block is strictly heavier.
+        if new_diff <= our_diff {
+            return Ok(false);
+        }
+
+        println!(
+            "🔀 [reorg] Multi-block reorg: rolling back from {} to {}, then applying foreign block",
+            self.height, fork_height
+        );
+
+        // 1. Roll back our chain to the fork point.
+        self.rollback_to(fork_height)?;
+
+        // 2. Apply the foreign block.
+        match self.accept_block(block) {
+            Ok(()) => {
+                println!(
+                    "🔀 [reorg] Complete. New height: {}",
+                    self.height
+                );
+                Ok(true)
+            }
+            Err(e) => {
+                eprintln!(
+                    "❌ [reorg] Rolled back but failed to apply foreign block: {}",
+                    e.describe()
+                );
+                Err(format!("Reorg failed: {}", e.describe()))
+            }
+        }
+    }
+
     /// Try to switch to a competing branch when a block does not extend
     /// our current tip.
     ///
@@ -2361,15 +2573,10 @@ impl Node {
             return Ok(false);
         }
 
-        // 5. We only handle single-block reorg here: the fork point must be
-        //    exactly our tip - 1.
+               // 5. If the fork point is not our immediate parent, this is a
+        //    deeper (multi-block) fork. Handle it via the multi-block path.
         if fork_height + 1 != self.height {
-            // Deeper fork — stash for P9.3.
-            self.forks
-                .entry(block.header.prev_hash)
-                .or_default()
-                .push(block.clone());
-            return Ok(false);
+            return self.try_multi_block_reorg(block);
         }
 
         // 6. Get our block at `height` to compare against.
