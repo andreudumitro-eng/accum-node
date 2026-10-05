@@ -1119,68 +1119,121 @@ impl SyncManager {
         blocks: &[Block],
         node: &mut Node,
     ) -> Result<Height, String> {
-        let mut accepted = 0u64;
-        let mut last_error: Option<AcceptError> = None;
+        if blocks.is_empty() {
+            return Ok(node.height);
+        }
 
-        for block in blocks {
+        // ============================================================
+        // PHASE 1: Try to accept the batch as a continuation of our chain.
+        // ============================================================
+        let mut accepted = 0u64;
+        let mut failed_at: Option<usize> = None;
+
+        for (i, block) in blocks.iter().enumerate() {
             match node.accept_block(block) {
-                Ok(()) => {
-                    accepted += 1;
-                }
-                Err(AcceptError::AlreadyKnown) => {
-                    // Not an error: we've seen it.
-                    accepted += 1;
-                }
+                Ok(()) => accepted += 1,
+                Err(AcceptError::AlreadyKnown) => accepted += 1,
                 Err(AcceptError::PrevHashMismatch { .. }) => {
-                    // Possible fork — try to switch to the competing branch.
-                    match node.try_fork_switch(block) {
-                        Ok(true) => {
-                            // Reorg succeeded — the block is now part of our chain.
-                            accepted += 1;
-                        }
-                        Ok(false) => {
-                            // Not a fork we can handle now (deeper than 1 block).
-                            // Stop the batch and let the caller decide.
-                            last_error = Some(AcceptError::PrevHashMismatch {
-                                expected: node.last_hash(),
-                                got: block.header.prev_hash,
-                                height: node.height + 1,
-                            });
-                            break;
-                        }
-                        Err(e) => {
-                            // Reorg failed — record and stop.
-                            last_error = Some(AcceptError::Storage(format!(
-                                "fork switch failed: {}",
-                                e
-                            )));
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    last_error = Some(e);
+                    failed_at = Some(i);
                     break;
                 }
+                Err(e) => {
+                    return Err(format!("{}: {}", accepted, e.describe()));
+                }
+            }
+        }
+
+        if failed_at.is_none() {
+            let new_height = node.height;
+            self.local_height = new_height;
+            return Ok(new_height);
+        }
+
+        // ============================================================
+        // PHASE 2: Fork. Try a full batch reorg.
+        // ============================================================
+        let fork_index = failed_at.unwrap();
+        let fork_blocks = &blocks[fork_index..];
+
+        println!(
+            "🔀 [sync] Fork detected at batch index {} (height {}). Attempting reorg...",
+            fork_index,
+            node.height + 1,
+        );
+
+        // 1. Find common ancestor for the whole batch.
+        let (common_height, _common_hash) = match node.find_common_ancestor(fork_blocks) {
+            Some(x) => x,
+            None => {
+                return Err(format!(
+                    "{}: fork detected but no common ancestor found",
+                    accepted
+                ));
+            }
+        };
+
+        println!(
+            "🔀 [sync] Common ancestor at height {}. Comparing work...",
+            common_height
+        );
+
+        // 2. Compare total work: reorg only if the foreign branch is
+        //    strictly heavier than ours from the fork point.
+        //
+        //    We sum `difficulty` over blocks [common_height+1 ..= our_height]
+        //    for our side, and over `fork_blocks` for theirs.
+        //
+        //    `difficulty` is Target; `to_difficulty()` returns f64 in this
+        //    codebase, so we scale it to u128 by multiplying and casting
+        //    to avoid precision loss on tiny values. In practice both
+        //    sides should have comparable magnitudes.
+        let our_work: u128 = (common_height + 1..=node.height)
+            .filter_map(|h| node.storage.get_block(h).ok().flatten())
+            .map(|b| (b.header.difficulty.to_difficulty() * 1_000_000_000.0) as u128)
+            .sum();
+
+        let their_work: u128 = fork_blocks
+            .iter()
+            .map(|b| (b.header.difficulty.to_difficulty() * 1_000_000_000.0) as u128)
+            .sum();
+
+        println!(
+            "🔀 [sync] our_work={}, their_work={}",
+            our_work, their_work
+        );
+
+        if their_work <= our_work {
+            println!(
+                "⏭️ [sync] Foreign branch not heavier, skipping reorg"
+            );
+            return Ok(node.height);
+        }
+
+        // 3. Roll back to the common ancestor.
+        println!(
+            "🔀 [sync] Rolling back from height {} to {}...",
+            node.height, common_height
+        );
+        if let Err(e) = node.rollback_to(common_height) {
+            return Err(format!("reorg rollback failed: {}", e));
+        }
+
+        // 4. Apply the foreign branch.
+        match node.apply_foreign_branch(fork_blocks) {
+            Ok(applied) => {
+                println!(
+                    "🔀 [sync] Applied {} foreign blocks. New height: {}",
+                    applied, node.height
+                );
+            }
+            Err(e) => {
+                return Err(format!("apply_foreign_branch failed: {}", e));
             }
         }
 
         let new_height = node.height;
         self.local_height = new_height;
-
-        // Mirror into deprecated fields for backward-compat.
-        if accepted > 0 {
-            for block in &blocks[..accepted as usize] {
-                let h = block.header.hash(&mut node.argon2);
-                self.local_chain.push(block.header.clone());
-                self.local_hashes.insert(h, node.block_hashes[&h]);
-            }
-        }
-
-        if let Some(e) = last_error {
-            // Return info for the caller to decide whether to ban.
-            return Err(format!("{}: {}", accepted, e.describe()));
-        }
+        self.sync_complete_height = new_height;
 
         Ok(new_height)
     }
