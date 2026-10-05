@@ -13,7 +13,7 @@ pub const EPOCH_REWARD_YEAR_4: u64 = 72_000_000;  // 7.2 ACM
 pub const EPOCH_REWARD_YEAR_5_PLUS: u64 = 7_200_000; // 0.72 ACM
 
 pub const TARGET_BLOCK_TIME: u64 = 60;
-pub const EPOCH_BLOCKS: u64 = 1440;
+pub const EPOCH_BLOCKS: u64 = 100;
 pub const GENESIS_TIMESTAMP: u64 = 1790184787;
 pub const MINIMUM_FEE_LYT: u64 = 50;
 pub const DUST_LIMIT_LYT: u64 = 100;
