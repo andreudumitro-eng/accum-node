@@ -1192,15 +1192,64 @@ impl SyncManager {
             .map(|b| (b.header.difficulty.to_difficulty() * 1_000_000_000.0) as u128)
             .sum();
 
-        let their_work: u128 = fork_blocks
+                // 2. Compare total work from common ancestor to tip.
+        //
+        //    our_work   = sum of difficulty of our blocks (common_height+1 ..= node.height).
+        //    their_work = sum of difficulty of peer's blocks (common_height+1 ..= peer_tip_height).
+        //
+        //    We only have a slice of the peer's chain (fork_blocks), so we
+        //    estimate the peer's total work by scaling the batch work to the
+        //    full span:
+        //
+        //        their_work = batch_work * (peer_tip_height - common_height) / batch_len
+        //
+        //    This gives a fair comparison even when the batch is only a part
+        //    of the peer's chain.
+        let our_work: u128 = (common_height + 1..=node.height)
+            .filter_map(|h| node.storage.get_block(h).ok().flatten())
+            .map(|b| (b.header.difficulty.to_difficulty() * 1_000_000_000.0) as u128)
+            .sum();
+
+        let batch_work: u128 = fork_blocks
             .iter()
             .map(|b| (b.header.difficulty.to_difficulty() * 1_000_000_000.0) as u128)
             .sum();
 
+        // Determine the peer's tip height.
+        //
+        // We look up the peer by matching the local sync session's peer_id
+        // against self.peers. If not found, fall back to assuming the batch
+        // covers the whole foreign branch (old behaviour).
+        let peer_tip_height = self
+            .active_session
+            .as_ref()
+            .and_then(|s| self.peers.get(&s.peer_id))
+            .map(|p| p.height)
+            .unwrap_or(common_height + fork_blocks.len() as u64);
+
+        let batch_len = fork_blocks.len() as u64;
+        let span = peer_tip_height.saturating_sub(common_height);
+
+        let their_work: u128 = if batch_len == 0 {
+            0
+        } else if span <= batch_len {
+            batch_work
+        } else {
+            // Scale: batch covers only part of the span.
+            batch_work.saturating_mul(span as u128) / batch_len as u128
+        };
+
         println!(
-            "🔀 [sync] our_work={}, their_work={}",
-            our_work, their_work
+            "🔀 [sync] our_work={}, their_work={} (batch={}, span={}, peer_tip={})",
+            our_work, their_work, batch_len, span, peer_tip_height
         );
+
+        if their_work <= our_work {
+            println!(
+                "⏭️ [sync] Foreign branch not heavier, skipping reorg"
+            );
+            return Ok(node.height);
+        }
 
         if their_work <= our_work {
             println!(
