@@ -2350,27 +2350,24 @@ impl Node {
             return None;
         }
 
-        // Build a set of foreign block hashes for O(1) lookup.
-        let mut foreign_hashes: HashSet<Hash32> = HashSet::new();
-        for b in foreign_blocks {
-            let h = b.header.hash(&mut self.argon2);
-            foreign_hashes.insert(h);
+        // 1. prev_hash первого foreign-блока — потенциальный fork point.
+        let first = &foreign_blocks[0];
+        if let Some(h) = self.block_hashes.get(&first.header.prev_hash) {
+            return Some((*h, first.header.prev_hash));
         }
 
-        // Walk OUR chain backward from tip to genesis.
-        // The first block whose hash is in the foreign set is the
-        // deepest common ancestor.
-        for h in (0..=self.height).rev() {
-            if let Some(our_block) = self.storage.get_block(h).ok().flatten() {
-                let our_hash = our_block.header.hash(&mut self.argon2);
-                if foreign_hashes.contains(&our_hash) {
-                    return Some((h, our_hash));
-                }
+        // 2. Идём по foreign_blocks, ищем совпадение с нашей цепочкой.
+        for b in foreign_blocks {
+            let foreign_hash = b.header.hash(&mut self.argon2);
+            if let Some(h) = self.block_hashes.get(&foreign_hash) {
+                return Some((*h, foreign_hash));
             }
         }
 
+        // 3. Общего предка не нашли.
         None
     }
+    
         /// Roll back our chain to the given height.
     ///
     /// Removes all blocks above `target_height`, applies reverse UTXO
