@@ -2364,10 +2364,15 @@ impl Node {
             }
         }
 
-        // 3. Общего предка не нашли.
+        // 3. Fallback: если genesis общий — вернуть genesis.
+        if let Some(genesis) = self.storage.get_block(0).ok().flatten() {
+            let genesis_hash = genesis.header.hash(&mut self.argon2);
+            return Some((0, genesis_hash));
+        }
+
         None
     }
-    
+
         /// Roll back our chain to the given height.
     ///
     /// Removes all blocks above `target_height`, applies reverse UTXO
