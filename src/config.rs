@@ -29,6 +29,7 @@ pub struct MiningConfig {
     pub enabled: bool,
     pub bond: u64,
     pub threads: usize,
+    pub allow_solo_without_peers: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,26 +60,18 @@ impl Default for Config {
         Self {
             network: NetworkConfig {
                 port: P2P_PORT,
-                bootnodes: vec!["seed.accum.network:30333".to_string()],
+                bootnodes: vec!["201.24.61.31:30333".to_string()],
                 max_peers: MAX_PEERS,
-                seed_nodes: vec![
-                    "seed1.accum.network:30333".to_string(),
-                    "seed2.accum.network:30333".to_string(),
-                    "seed3.accum.network:30333".to_string(),
-                    "seed4.accum.network:30333".to_string(),
-                    "seed5.accum.network:30333".to_string(),
-                ],
-                dns_seeds: vec![
-                    "dnsseed.accum.network".to_string(),
-                    "dnsseed.accum.org".to_string(),
-                ],
-                enable_seed_discovery: true,
+                seed_nodes: vec![],
+                dns_seeds: vec![],
+                enable_seed_discovery: false,
                 seed_connection_timeout_secs: 10,
             },
             mining: MiningConfig {
                 enabled: true,
                 bond: MINIMUM_BOND_LYT,
                 threads: 4,
+                allow_solo_without_peers: false,
             },
             rpc: RpcConfig {
                 enabled: true,

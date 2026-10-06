@@ -96,7 +96,7 @@ pub const PEER_TIMEOUT_SECS: u64 = 300;
 pub const STATS_UPDATE_INTERVAL_MS: u64 = 100;
 pub const MINING_BATCH_SIZE: u64 = 100_000;
 
-pub const SYNC_BATCH_SIZE: u64 = 500;
+pub const SYNC_BATCH_SIZE: u64 = 10;
 pub const SYNC_MAX_RETRIES: u32 = 3;
 pub const SYNC_RETRY_DELAY_SECS: u64 = 10;
 pub const MAX_BLOCKS_IN_RESPONSE: u32 = 500;
