@@ -1266,6 +1266,15 @@ impl SyncManager {
         if let Err(e) = node.rollback_to(common_height) {
             return Err(format!("reorg rollback failed: {}", e));
         }
+        
+                // Reset sync session to the new height, so the next
+        // GetBlocks request starts from common_height + 1,
+        // not from the old (stale) current_height.
+        if let Some(session) = self.active_session.as_mut() {
+            session.current_height = common_height;
+            session.status = SyncStatus::Requesting;
+            session.last_activity = current_timestamp();
+        }
 
         // 4. Apply the foreign branch.
         match node.apply_foreign_branch(fork_blocks) {
