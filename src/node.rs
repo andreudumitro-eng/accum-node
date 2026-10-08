@@ -2999,9 +2999,14 @@ impl Node {
                     pubkey,
                 };
     
-                // Save the share silently — visible in [STATUS] as shares=N.
-                let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
-                let _ = self.add_share(share);
+                               // Save the share silently — visible in [STATUS] as shares=N.
+        let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
+        let _ = self.add_share(share.clone());
+
+        // Broadcast the share to all peers.
+        if let Some(p2p) = &mut self.p2p {
+            p2p.broadcast(&P2PMessage::Share(share));
+        }
     
                 // Persist the block.
                 if let Err(e) = self.storage.save_block(new_height, &block) {
@@ -3144,7 +3149,11 @@ impl Node {
                 let mut header = job.header.clone();
                 header.nonce = best_nonce;
                 let share = Share::new(self.miner_id, header, best_nonce, best_hash);
-                let _ = self.add_share(share);
+                let _ = self.add_share(share.clone());
+
+                if let Some(p2p) = &mut self.p2p {
+                    p2p.broadcast(&P2PMessage::Share(share));
+                }
             }
             return Ok(true);
         }
@@ -3196,10 +3205,15 @@ impl Node {
             pubkey,
         };
 
-        // Save the share silently — visible in [STATUS] as shares=N.
-        let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
-        let _ = self.add_share(share);
-
+                                // Save the share silently — visible in [STATUS] as shares=N.
+                                let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
+                                let _ = self.add_share(share.clone());
+                
+                                if let Some(p2p) = &mut self.p2p {
+                                    p2p.broadcast(&P2PMessage::Share(share));
+                                }
+        
+              
         let new_height = job.height;
 
         // Persist the block.

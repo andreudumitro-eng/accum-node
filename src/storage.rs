@@ -36,8 +36,12 @@ impl Bond {
         }
     }
 
-    pub fn is_active(&self, current_height: Height) -> bool {
-        current_height >= self.created_at && current_height < self.lock_until
+    pub fn is_active(&self, _current_height: Height) -> bool {
+        self.amount >= MINIMUM_BOND_LYT
+    }
+
+    pub fn is_locked(&self, current_height: Height) -> bool {
+        current_height < self.lock_until
     }
 
     pub fn is_valid_for_poci(&self) -> bool {

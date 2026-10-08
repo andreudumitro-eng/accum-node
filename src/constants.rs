@@ -20,7 +20,7 @@ pub const DUST_LIMIT_LYT: u64 = 100;
 
 // Treasury (7% of epoch reward)
 pub const TREASURY_FRACTION_BPS: u64 = 700; // 700 / 10000 = 7%
-pub const TREASURY_ADDRESS: &str = "1PlaceholderTreasuryAddressReplaceLater";
+pub const TREASURY_ADDRESS: &str = "1JK3qmgjwQJJ3wsb5dtaaEUDX13cpF9wdD";
 
 pub const ARGON2_MEMORY_KB: u32 = 262_144;
 pub const ARGON2_ITERATIONS: u32 = 2;

@@ -519,7 +519,9 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                     let behind = best_peer.saturating_sub(our_height);
                     let not_too_far_behind = behind <= 10;
 
-                    let solo_ok = peers > 0 || genesis_mode;
+                    let solo_ok = peers > 0
+                        || genesis_mode
+                        || config.mining.allow_solo_without_peers;
 
                     if !is_syncing && not_too_far_behind && solo_ok {
                         node.abort_mining
