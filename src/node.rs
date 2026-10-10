@@ -906,6 +906,7 @@ impl Node {
 
         if let Some(miner) = self.miners.get(&miner_id) {
             if miner.is_banned(now) {
+                println!("   add_share: BANNED {}", hex::encode(&miner_id[0..6]));
                 return false;
             }
         }
@@ -916,6 +917,12 @@ impl Node {
             .map(|b| b.is_active(self.height))
             .unwrap_or(false);
         if !bond_active {
+            println!(
+                "   add_share: NO BOND miner={} height={} bonds_len={}",
+                hex::encode(&miner_id[0..6]),
+                self.height,
+                self.bonds.len(),
+            );
             return false;
         }
 
@@ -1500,8 +1507,15 @@ impl Node {
                         }
                     }
                     P2PMessage::Share(share) => {
+                        println!(
+                            "📥 SHARE-RECV miner={} prev={} hash={}",
+                            hex::encode(&share.miner_id[0..6]),
+                            hex::encode(&share.header.prev_hash[0..8]),
+                            hex::encode(&share.hash[0..8]),
+                        );
                         let accepted = self.add_share(share.clone());
-        
+                        println!("   add_share -> {}", accepted);
+                    
                         if accepted {
                             let msg = P2PMessage::Share(share);
                             let p2p = self.p2p.as_mut().unwrap();
@@ -2138,43 +2152,43 @@ impl Node {
         }
     }
     
-        /// Broadcast RegisterMiner — our miner_id + payout address.
-        pub fn broadcast_register_miner(&mut self) {
-            let wallet = match &self.wallet {
-                Some(w) => w,
-                None => return,
-            };
-    
-            let timestamp = current_timestamp();
-    
-            // Signed message: sha256(miner_id || payout_address || timestamp_le).
-            let mut msg = Vec::new();
-            msg.extend_from_slice(&wallet.miner_id);
-            msg.extend_from_slice(wallet.address.as_bytes());
-            msg.extend_from_slice(&timestamp.to_le_bytes());
-            let digest: [u8; 32] = Sha256::digest(&msg).into();
-    
-            let signature = match wallet.sign(&digest) {
-                Ok(s) => s,
-                Err(e) => {
-                    println!("⚠️ RegisterMiner: cannot sign: {}", e);
-                    return;
-                }
-            };
-    
-            let msg = P2PMessage::RegisterMiner {
-                miner_id: wallet.miner_id,
-                payout_address: wallet.address.clone(),
-                pubkey: wallet.public_key.clone(),
-                signature,
-                timestamp,
-            };
-    
-            if let Some(p2p) = &mut self.p2p {
-                p2p.broadcast(&msg);
-                println!("📝 Broadcast RegisterMiner ({})", wallet.address);
+           /// Broadcast RegisterMiner — our miner_id + payout address.
+    pub fn broadcast_register_miner(&mut self) {
+        let wallet = match &self.wallet {
+            Some(w) => w,
+            None => return,
+        };
+
+        let timestamp = current_timestamp();
+
+        // Signed message: sha256(miner_id || payout_address || timestamp_le).
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&wallet.miner_id);
+        msg.extend_from_slice(wallet.address.as_bytes());
+        msg.extend_from_slice(&timestamp.to_le_bytes());
+        let digest: [u8; 32] = Sha256::digest(&msg).into();
+
+        let signature = match wallet.sign(&digest) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("⚠️ RegisterMiner: cannot sign: {}", e);
+                return;
             }
+        };
+
+        let msg = P2PMessage::RegisterMiner {
+            miner_id: wallet.miner_id,
+            payout_address: wallet.address.clone(),
+            pubkey: wallet.public_key.clone(),
+            signature,
+            timestamp,
+        };
+
+        if let Some(p2p) = &mut self.p2p {
+            p2p.broadcast(&msg);
+            println!("📝 Broadcast RegisterMiner ({})", wallet.address);
         }
+    }
 
     // ------------------------------------------------------------------
     // Mining
@@ -3000,13 +3014,18 @@ impl Node {
                 };
     
                                // Save the share silently — visible in [STATUS] as shares=N.
-        let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
-        let _ = self.add_share(share.clone());
-
-        // Broadcast the share to all peers.
-        if let Some(p2p) = &mut self.p2p {
-            p2p.broadcast(&P2PMessage::Share(share));
-        }
+                               let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
+                               let _ = self.add_share(share.clone());
+                       
+                               println!(
+                                   "📤 SHARE-SEND miner={} prev={} hash={}",
+                                   hex::encode(&share.miner_id[0..6]),
+                                   hex::encode(&share.header.prev_hash[0..8]),
+                                   hex::encode(&share.hash[0..8]),
+                               );
+                               if let Some(p2p) = &mut self.p2p {
+                                   p2p.broadcast(&P2PMessage::Share(share));
+                               }
     
                 // Persist the block.
                 if let Err(e) = self.storage.save_block(new_height, &block) {
@@ -3151,6 +3170,12 @@ impl Node {
                 let share = Share::new(self.miner_id, header, best_nonce, best_hash);
                 let _ = self.add_share(share.clone());
 
+                println!(
+                    "📤 SHARE-SEND miner={} prev={} hash={}",
+                    hex::encode(&share.miner_id[0..6]),
+                    hex::encode(&share.header.prev_hash[0..8]),
+                    hex::encode(&share.hash[0..8]),
+                );
                 if let Some(p2p) = &mut self.p2p {
                     p2p.broadcast(&P2PMessage::Share(share));
                 }
@@ -3208,7 +3233,13 @@ impl Node {
                                 // Save the share silently — visible in [STATUS] as shares=N.
                                 let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
                                 let _ = self.add_share(share.clone());
-                
+                        
+                                println!(
+                                    "📤 SHARE-SEND miner={} prev={} hash={}",
+                                    hex::encode(&share.miner_id[0..6]),
+                                    hex::encode(&share.header.prev_hash[0..8]),
+                                    hex::encode(&share.hash[0..8]),
+                                );
                                 if let Some(p2p) = &mut self.p2p {
                                     p2p.broadcast(&P2PMessage::Share(share));
                                 }
@@ -3338,6 +3369,19 @@ impl Node {
                         e
                     );
                 }
+
+                // Apply bond if this output is a bond UTXO.
+                if let Some(miner_id) = output.extract_miner_id() {
+                    if output.value >= MINIMUM_BOND_LYT {
+                        let bond = Bond::new(output.value, self.height, miner_id);
+                        self.bonds.insert(miner_id, bond.clone());
+                        let _ = self.storage.save_bond(&miner_id, &bond);
+                        if let Some(miner) = self.miners.get_mut(&miner_id) {
+                            miner.bond = output.value;
+                            let _ = self.storage.save_miner(&miner_id, miner);
+                        }
+                    }
+                }
             }
 
             for input in &tx.inputs {
@@ -3353,7 +3397,7 @@ impl Node {
             }
         }
     }
-
+    
     // ------------------------------------------------------------------
     // Epoch end
     // ------------------------------------------------------------------
