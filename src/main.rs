@@ -529,8 +529,7 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                         match node.prepare_mining_job() {
                             Ok(j) => Some(j),
                             Err(e) => {
-                                eprintln!("⚠️ prepare_mining_job failed: {}", e);
-                                None
+                                eprintln!("⚠️ prepare_mining_job failed: {}", e);                                None
                             }
                         }
                     } else {
