@@ -506,7 +506,6 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                 // ---- Phase 1: prepare a job under a short write-lock. ----
                 let job = {
                     let mut node = node_for_miner.write();
-
                     let peers = node.p2p.as_ref().map(|p| p.peer_count()).unwrap_or(0);
                     let is_syncing = node.p2p.as_ref().map(|p| p.is_syncing()).unwrap_or(false);
 
@@ -546,7 +545,8 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                 };
 
                 // ---- Phase 2: mine WITHOUT holding the write-lock. ----
-                let (best_nonce, best_hash, found_block) = mine_multithreaded(
+                let mining_start = std::time::Instant::now();
+                let (best_nonce, best_hash, found_block, attempts) = mine_multithreaded(
                     &job,
                     &node_for_miner,
                     config.mining.threads.max(1) as u64,
@@ -555,6 +555,10 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                 // ---- Phase 3: commit under a short write-lock. ----
                 {
                     let mut node = node_for_miner.write();
+                    let elapsed = mining_start.elapsed().as_secs_f64().max(0.001);
+                    let hps = (attempts as f64 / elapsed) as u64;
+                    node.last_hash_rate = hps;
+                    if hps > node.peak_hash_rate { node.peak_hash_rate = hps; }
                     if let Err(e) =
                         node.commit_mining_result(&job, best_nonce, best_hash, found_block)
                     {
@@ -588,7 +592,7 @@ fn mine_multithreaded(
     job: &node::MiningJob,
     node_arc: &std::sync::Arc<parking_lot::RwLock<node::Node>>,
     num_threads: u64,
-) -> (u64, Hash32, bool) {
+) -> (u64, Hash32, bool, u64) {
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
 
@@ -601,6 +605,7 @@ fn mine_multithreaded(
     let best_hash_shared = Arc::new(Mutex::new([0xffu8; 32]));
     let best_nonce_shared = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let block_found = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let attempts_shared = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let num_threads = num_threads.max(1);
     let batch = MINING_BATCH_SIZE;
@@ -610,6 +615,7 @@ fn mine_multithreaded(
             let best_hash_ref = Arc::clone(&best_hash_shared);
             let best_nonce_ref = Arc::clone(&best_nonce_shared);
             let found_ref = Arc::clone(&block_found);
+            let attempts_ref = Arc::clone(&attempts_shared);
             let node_ref = Arc::clone(node_arc);
             let hb = &header_bytes;
 
@@ -618,6 +624,7 @@ fn mine_multithreaded(
 
                 let mut nonce = t;
                 while nonce < batch {
+                    attempts_ref.fetch_add(1, Ordering::Relaxed);
                     if found_ref.load(Ordering::Relaxed) {
                         break;
                     }
@@ -666,5 +673,5 @@ fn mine_multithreaded(
     let best_hash = *best_hash_shared.lock().unwrap();
     let best_nonce = best_nonce_shared.load(Ordering::Relaxed);
     let found_block = block_found.load(Ordering::Relaxed);
-    (best_nonce, best_hash, found_block)
+    (best_nonce, best_hash, found_block, attempts_shared.load(Ordering::Relaxed))
 }
