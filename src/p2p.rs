@@ -128,6 +128,10 @@ pub enum P2PMessage {
         signature: Vec<u8>,
         timestamp: Timestamp,
     },
+    BondBroadcast {
+        miner_id: MinerId,
+        amount: u64,
+    },
 
     // ============================================================
     // Epoch commit + share sync messages (v3.2+)

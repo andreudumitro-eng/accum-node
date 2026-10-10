@@ -1526,6 +1526,22 @@ impl Node {
                             }
                         }
                     }
+                    P2PMessage::BondBroadcast { miner_id, amount } => {
+                        if amount >= MINIMUM_BOND_LYT {
+                            let bond = crate::storage::Bond::new(amount, self.height, miner_id);
+                            self.bonds.insert(miner_id, bond.clone());
+                            let _ = self.storage.save_bond(&miner_id, &bond);
+                            if let Some(miner) = self.miners.get_mut(&miner_id) {
+                                miner.bond = amount;
+                                let _ = self.storage.save_miner(&miner_id, miner);
+                            }
+                            println!(
+                                "💰 BondBroadcast applied: {}...: {} LYT",
+                                hex::encode(&miner_id[0..8]),
+                                amount
+                            );
+                        }
+                    }
                     P2PMessage::Block {
                         header,
                         transactions,
@@ -3397,7 +3413,7 @@ impl Node {
             }
         }
     }
-    
+
     // ------------------------------------------------------------------
     // Epoch end
     // ------------------------------------------------------------------
