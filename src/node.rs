@@ -1219,16 +1219,41 @@ impl Node {
             }
         }
 
-                // 3d. Periodic RegisterMiner broadcast every 60 seconds.
-                {
-                    let now = current_timestamp();
-                    if now.saturating_sub(self.last_register_broadcast) >= 60 {
-                        self.broadcast_register_miner();
-                        self.last_register_broadcast = now;
-                    }
-                }
-
-        // 4. Handle sync timeouts.
+                               // 3d. Periodic RegisterMiner broadcast every 60 seconds.
+                               {
+                                let now = current_timestamp();
+                                if now.saturating_sub(self.last_register_broadcast) >= 60 {
+                                    self.broadcast_register_miner();
+                                    self.last_register_broadcast = now;
+                                }
+                            }
+            
+                            // 3e. Send our bond to newly-connected peers.
+                            {
+                                let our_miner_id = self.miner_id;
+                                let our_bond_amount = self
+                                    .bonds
+                                    .get(&our_miner_id)
+                                    .map(|b| b.amount)
+                                    .unwrap_or(0);
+            
+                                if our_bond_amount > 0 {
+                                    if let Some(p2p) = self.p2p.as_mut() {
+                                        for (_addr, peer) in p2p.peers.iter_mut() {
+                                            if peer.needs_bond_broadcast {
+                                                let msg = P2PMessage::BondBroadcast {
+                                                    miner_id: our_miner_id,
+                                                    amount: our_bond_amount,
+                                                };
+                                                let _ = peer.send_message(&msg);
+                                                peer.needs_bond_broadcast = false;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+            
+                    // 4. Handle sync timeouts.
         if let Some(p2p) = self.p2p.as_mut() {
             if let Some(_peer_id) = p2p.sync_manager.check_timeouts() {
                 println!("⚠️ Sync timeout with peer");

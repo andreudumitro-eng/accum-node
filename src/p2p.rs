@@ -209,6 +209,7 @@ pub struct PeerConnection {
     pub ban_reason: Option<String>,
     pub ping_nonce: Option<u64>,
     pub ping_time: Option<u64>,
+    pub needs_bond_broadcast: bool,
 }
 impl PeerConnection {
     pub fn new(stream: TcpStream, address: SocketAddr) -> Self {
@@ -237,6 +238,7 @@ impl PeerConnection {
             ban_reason: None,
             ping_nonce: None,
             ping_time: None,
+            needs_bond_broadcast: true,
         }
     }
 
