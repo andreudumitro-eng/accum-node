@@ -406,17 +406,31 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
         println!("📡 RPC server started on port {}", config.rpc.port);
     }
 
-    // ---- Bond for the local miner ----
-    {
-        let mut node = node_arc.write();
-        if config.mining.enabled && !node.bonds.contains_key(&node.miner_id) {
-            let miner_id = node.miner_id;
-            let bond_amount = config.mining.bond.max(MINIMUM_BOND_LYT);
-            node.add_bond(miner_id, bond_amount);
-            println!("💰 Bond added: {} LYT", bond_amount);
+        // ---- Bond for the local miner ----
+        {
+            let mut node = node_arc.write();
+            if config.mining.enabled {
+                let miner_id = node.miner_id;
+                let bond_amount = config.mining.bond.max(MINIMUM_BOND_LYT);
+    
+                // Ensure the local bond exists.
+                if !node.bonds.contains_key(&miner_id) {
+                    node.add_bond(miner_id, bond_amount);
+                    println!("💰 Bond added: {} LYT", bond_amount);
+                }
+    
+                // Always broadcast our bond so peers know about us.
+                if let Some(p2p) = node.p2p.as_mut() {
+                    let msg = crate::p2p::P2PMessage::BondBroadcast {
+                        miner_id,
+                        amount: bond_amount,
+                    };
+                    p2p.broadcast(&msg);
+                    println!("📣 BondBroadcast sent: {}...", hex::encode(&miner_id[0..8]));
+                }
+            }
         }
-    }
-
+        
     println!("\n=== NODE STARTED ===");
     {
         let node = node_arc.read();
