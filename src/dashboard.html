@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACCUM — Fair Mining</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #FAFAFA;
+    --card: #FFFFFF;
+    --border: #E5E7EB;
+    --text: #111827;
+    --muted: #6B7280;
+    --accent: #0066FF;
+    --success: #059669;
+    --danger: #DC2626;
+    --warn: #D97706;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    padding: 40px 20px;
+  }
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+  h1 {
+    font-family: 'Playfair Display', serif;
+    font-style: italic;
+    font-weight: 900;
+    font-size: 72px;
+    letter-spacing: 8px;
+    color: var(--text);
+    line-height: 1;
+    margin-bottom: 16px;
+  }
+  .tagline {
+    font-family: 'Inter', sans-serif;
+    font-size: 15px;
+    color: var(--muted);
+    max-width: 640px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .card h2 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: var(--muted);
+    margin-bottom: 16px;
+  }
+  .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .row:last-child { border-bottom: none; }
+  .label { color: var(--muted); font-size: 13px; }
+  .value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text);
+    text-align: right;
+    word-break: break-all;
+  }
+  .value.big {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .value.ok { color: var(--success); }
+  .controls {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin: 24px 0;
+  }
+  button {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 24px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.15s;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  button.primary {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+  button.primary:hover {
+    background: #0052CC;
+    border-color: #0052CC;
+    color: white;
+  }
+  .footer {
+    text-align: center;
+    margin-top: 32px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--success);
+    margin-right: 6px;
+    vertical-align: middle;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+
+    <header>
+      <h1>ACCUM</h1>
+      <p class="tagline">
+        A coin where the small miner can compete with the big one —
+        because the math is built that way.
+      </p>
+    </header>
+
+    <div class="controls">
+      <button class="primary" onclick="miningAction('start')">▶ Start</button>
+      <button onclick="miningAction('pause')">⏸ Pause</button>
+      <button onclick="miningAction('stop')">⏹ Stop</button>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Wallet</h2>
+        <div class="row">
+          <span class="label">Address</span>
+          <span class="value" id="wallet-address">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Balance</span>
+          <span class="value big" id="wallet-balance">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Bond</span>
+          <span class="value" id="wallet-bond">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Loyalty</span>
+          <span class="value" id="wallet-loyalty">—</span>
+        </div>
+        <div class="row">
+          <span class="label">UTXO count</span>
+          <span class="value" id="wallet-utxo">—</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Mining</h2>
+        <div class="row">
+          <span class="label">Height</span>
+          <span class="value" id="mining-height">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Epoch</span>
+          <span class="value" id="mining-epoch">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Peers</span>
+          <span class="value" id="mining-peers">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Hashrate</span>
+          <span class="value ok" id="mining-hashrate">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Difficulty</span>
+          <span class="value" id="mining-difficulty">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Shares found</span>
+          <span class="value" id="mining-shares">—</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span class="status-dot"></span>
+      <span id="status-text">connecting…</span>
+    </div>
+
+  </div>
+
+<script>
+  function fmt(n) {
+    if (n === undefined || n === null) return '—';
+    return Number(n).toLocaleString('en-US');
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch('/api/info');
+      const d = await r.json();
+
+      // Wallet
+      document.getElementById('wallet-address').textContent = d.wallet?.address || '—';
+      document.getElementById('wallet-balance').textContent = fmt(d.wallet?.balance) + ' LYT';
+      document.getElementById('wallet-bond').textContent = fmt(d.wallet?.bond) + ' LYT';
+      document.getElementById('wallet-loyalty').textContent = d.wallet?.loyalty ?? '—';
+      document.getElementById('wallet-utxo').textContent = fmt(d.wallet?.utxo_count);
+
+      // Mining
+      document.getElementById('mining-height').textContent = fmt(d.height);
+      document.getElementById('mining-epoch').textContent = d.epoch ?? '—';
+      document.getElementById('mining-peers').textContent = d.peers ?? '—';
+      document.getElementById('mining-hashrate').textContent = (d.hash_rate ?? 0) + ' H/s';
+      document.getElementById('mining-difficulty').textContent = (d.difficulty ?? 0).toFixed(4);
+      document.getElementById('mining-shares').textContent = fmt(d.shares_found);
+
+      document.getElementById('status-text').textContent =
+        d.is_syncing ? 'syncing…' : 'live · height ' + d.height;
+    } catch(e) {
+      document.getElementById('status-text').textContent = 'offline: ' + e;
+    }
+  }
+
+  function miningAction(action) {
+    // Пока — просто заглушка. Позже будут реальные endpoints.
+    alert('Action: ' + action + '\n(будет реализовано позже)');
+  }
+
+  refresh();
+  setInterval(refresh, 1000);
+</script>
+</body>
+</html>

@@ -220,6 +220,30 @@ impl RpcServer {
             }))
         });
 
+        let balance_node = self.node.clone();
+        let balance = warp::path("balance")
+            .and(warp::path::param::<String>())
+            .and(warp::get())
+            .map(move |address: String| {
+                let node = balance_node.read();
+                match node.storage.get_utxos_by_address(&address) {
+                    Ok(utxos) => {
+                        let total: u64 = utxos.iter().map(|(_, txout)| txout.value).sum();
+                        warp::reply::json(&serde_json::json!({
+                            "address": address,
+                            "balance": total,
+                            "utxo_count": utxos.len(),
+                        }))
+                    }
+                    Err(e) => warp::reply::json(&serde_json::json!({
+                        "address": address,
+                        "error": e,
+                        "balance": 0,
+                        "utxo_count": 0,
+                    })),
+                }
+            });
+
         let mempool_node = self.node.clone();
         let mempool = warp::path("mempool").and(warp::get()).map(move || {
             let node = mempool_node.read();
@@ -254,14 +278,42 @@ impl RpcServer {
             }))
         });
 
-        let routes = info
+        let pause_node = node_info.clone();
+        let mining_pause = warp::path!("mining" / "pause")
+            .and(warp::post())
+            .map(move || {
+                let node = pause_node.read();
+                node.mining_paused
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                println!("⏸️  Mining paused via RPC");
+                warp::reply::json(&serde_json::json!({
+                    "status": "paused",
+                }))
+            });
+
+        let start_node = node_info.clone();
+        let mining_start = warp::path!("mining" / "start")
+            .and(warp::post())
+            .map(move || {
+                let node = start_node.read();
+                node.mining_paused
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                println!("▶️  Mining resumed via RPC");
+                warp::reply::json(&serde_json::json!({
+                    "status": "running",
+                }))
+            });
+
+            let routes = info
             .or(block)
             .or(send_tx)
             .or(peers)
             .or(miners)
+            .or(balance)
             .or(mempool)
             .or(health)
-            .with(cors);
+            .or(mining_pause)
+            .or(mining_start);
 
         println!("📡 RPC endpoints on port {}:", self.port);
         println!("   GET  /info       - node information");
@@ -271,6 +323,8 @@ impl RpcServer {
         println!("   GET  /miners     - list active miners");
         println!("   GET  /mempool    - list pending transactions");
         println!("   GET  /health     - health check");
+        println!("   POST /mining/pause - pause mining");
+        println!("   POST /mining/start - resume mining");
 
         warp::serve(routes).run(([0, 0, 0, 0], self.port)).await;
 

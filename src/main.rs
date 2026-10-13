@@ -37,6 +37,7 @@ mod genesis;
 mod network;
 mod node;
 mod p2p;
+mod dashboard;
 use node::*;
 mod rpc;
 use rpc::*;
@@ -386,8 +387,8 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
 
     let node_arc = Node::new(config.clone())?;
 
-    // ---- RPC in a separate OS thread with its own tokio runtime ----
-    if config.rpc.enabled {
+       // ---- RPC in a separate OS thread with its own tokio runtime ----
+       if config.rpc.enabled {
         let rpc_node = node_arc.clone();
         let rpc_port = config.rpc.port;
         std::thread::spawn(move || {
@@ -406,8 +407,14 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
         println!("📡 RPC server started on port {}", config.rpc.port);
     }
 
-        // ---- Bond for the local miner ----
-        {
+    // Web dashboard
+    {
+        let dashboard_node = node_arc.clone();
+        dashboard::start(dashboard_node, 8555);
+    }
+
+    // ---- Bond for the local miner ----
+    {
             let mut node = node_arc.write();
             if config.mining.enabled {
                 let miner_id = node.miner_id;
@@ -515,6 +522,19 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                 if should_shutdown() {
                     println!("⏳ Shutting down (mining thread)...");
                     break;
+                }
+                
+                  // Pause check: if paused, sleep and skip this iteration.
+                  {
+                    let node = node_for_miner.read();
+                    if node
+                        .mining_paused
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        drop(node);
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        continue;
+                    }
                 }
 
                 // ---- Phase 1: prepare a job under a short write-lock. ----

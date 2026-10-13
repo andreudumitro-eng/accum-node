@@ -159,6 +159,10 @@ pub struct Node {
     /// thread can abort its current batch ASAP.
     pub abort_mining: Arc<AtomicBool>,
 
+    /// Set to `true` when the user presses PAUSE in the dashboard.
+    /// The mining thread will sleep until it becomes `false` again.
+    pub mining_paused: Arc<AtomicBool>,
+
     /// Monotonic counter of chain version.
     /// Incremented whenever the tip changes.
     pub chain_generation: Arc<AtomicU64>,
@@ -237,6 +241,7 @@ impl Node {
             last_register_broadcast: 0,
             cached_difficulty: None,
             abort_mining: Arc::new(AtomicBool::new(false)),
+            mining_paused: Arc::new(AtomicBool::new(false)),
             chain_generation: Arc::new(AtomicU64::new(0)),
             forks: HashMap::new(),
             pending_rewards: HashMap::new(),
@@ -719,7 +724,7 @@ impl Node {
         share.validate(&target_share, expected_epoch, &mut self.argon2)
     }
 
-    fn last_difficulty(&self) -> Target {
+    pub fn last_difficulty(&self) -> Target {
         self.last_block()
             .map(|b| b.difficulty)
             .unwrap_or_else(Target::genesis)
