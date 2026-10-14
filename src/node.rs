@@ -936,19 +936,39 @@ impl Node {
         let target_share = self.last_difficulty().share_target();
         let expected_prev = self.last_hash();
 
-        let is_valid = match share.validate(
+        let validation_result = share.validate(
             &target_share,
             &expected_prev,
             current_epoch,
             now,
             &mut self.argon2,
-        ) {
+        );
+
+        let is_valid = match &validation_result {
             Ok(_) => true,
             Err(e) => {
                 println!("Invalid share: {}", e);
                 false
             }
         };
+
+        // Temporal errors — caused by chain races (forks), not by the miner.
+        // Do NOT count them toward invalid_ratio, otherwise peers get
+        // falsely banned during forks.
+        let is_temporal_error = match &validation_result {
+            Err(e) => {
+                let s = *e;
+                s == "Stale prev_hash"
+                    || s == "Wrong epoch"
+                    || s == "Share too old"
+                    || s == "Share too far in future"
+            }
+            Ok(_) => false,
+        };
+
+        if is_temporal_error {
+            return false;
+        }
 
         match self.share_pool.add_share(share.clone(), is_valid) {
             Ok(true) => {
@@ -2410,21 +2430,30 @@ impl Node {
             return None;
         }
 
-        // 1. prev_hash первого foreign-блока — потенциальный fork point.
-        let first = &foreign_blocks[0];
-        if let Some(h) = self.block_hashes.get(&first.header.prev_hash) {
-            return Some((*h, first.header.prev_hash));
-        }
-
-        // 2. Идём по foreign_blocks, ищем совпадение с нашей цепочкой.
+        // Build a set of hashes from the foreign batch.
+        let mut foreign_hashes: std::collections::HashSet<Hash32> =
+            std::collections::HashSet::new();
         for b in foreign_blocks {
-            let foreign_hash = b.header.hash(&mut self.argon2);
-            if let Some(h) = self.block_hashes.get(&foreign_hash) {
-                return Some((*h, foreign_hash));
-            }
+            foreign_hashes.insert(b.header.hash(&mut self.argon2));
         }
 
-        // 3. Fallback: если genesis общий — вернуть genesis.
+        // Walk OUR chain backward from tip to genesis, looking for the
+        // first block whose hash is in the foreign set.
+        let mut h = self.height;
+        loop {
+            if let Some(our_block) = self.storage.get_block(h).ok().flatten() {
+                let our_hash = our_block.header.hash(&mut self.argon2);
+                if foreign_hashes.contains(&our_hash) {
+                    return Some((h, our_hash));
+                }
+            }
+            if h == 0 {
+                break;
+            }
+            h -= 1;
+        }
+
+        // Fallback: genesis (both chains share it in practice).
         if let Some(genesis) = self.storage.get_block(0).ok().flatten() {
             let genesis_hash = genesis.header.hash(&mut self.argon2);
             return Some((0, genesis_hash));
