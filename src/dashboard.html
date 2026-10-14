@@ -133,6 +133,28 @@
     border-color: #0052CC;
     color: white;
   }
+
+  /* Active state — button reflects current mining state */
+  button.active {
+    color: white;
+    border-color: transparent;
+    box-shadow: 0 0 0 2px rgba(0,0,0,0.08) inset;
+  }
+  button.active.start {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  button.active.pause {
+    background: var(--warn);
+    border-color: var(--warn);
+  }
+  button.active.stop {
+    background: var(--danger);
+    border-color: var(--danger);
+  }
+  button.active:hover {
+    filter: brightness(0.95);
+  }
   .footer {
     text-align: center;
     margin-top: 32px;
@@ -167,9 +189,9 @@
     </header>
 
     <div class="controls">
-      <button class="primary" onclick="miningAction('start')">▶ Start</button>
-      <button onclick="miningAction('pause')">⏸ Pause</button>
-      <button onclick="miningAction('stop')">⏹ Stop</button>
+      <button id="btn-start" class="primary start" onclick="miningAction('start')">▶ Start</button>
+      <button id="btn-pause" class="pause" onclick="miningAction('pause')">⏸ Pause</button>
+      <button id="btn-stop" class="stop" onclick="miningAction('stop')">⏹ Stop</button>
     </div>
 
     <div class="grid">
@@ -262,13 +284,28 @@
       document.getElementById('status-text').textContent =
         d.is_syncing ? 'syncing…' : 'live · height ' + d.height;
     } catch(e) {
+            // Update button states based on mining_paused
+            const paused = d.mining_paused === true;
+      document.getElementById('btn-start').classList.toggle('active', !paused);
+      document.getElementById('btn-pause').classList.toggle('active', paused);
       document.getElementById('status-text').textContent = 'offline: ' + e;
     }
   }
 
-  function miningAction(action) {
-    // Пока — просто заглушка. Позже будут реальные endpoints.
-    alert('Action: ' + action + '\n(будет реализовано позже)');
+  async function miningAction(action) {
+    if (action === 'stop') {
+      alert('Stop не реализовано. Закрой окно узла (Ctrl+C).');
+      return;
+    }
+    const url = action === 'start' ? '/api/mining/start' : '/api/mining/pause';
+    try {
+      const r = await fetch(url, { method: 'POST' });
+      const d = await r.json();
+      console.log('mining action:', action, d);
+      refresh();
+    } catch(e) {
+      console.error('mining action failed:', e);
+    }
   }
 
   refresh();

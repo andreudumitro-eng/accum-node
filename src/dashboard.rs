@@ -4,7 +4,7 @@ use crate::node::Node;
 use axum::{
     extract::State,
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use parking_lot::RwLock;
@@ -18,6 +18,8 @@ pub fn start(node: SharedNode, port: u16) {
         let app = Router::new()
             .route("/", get(index))
             .route("/api/info", get(api_info))
+            .route("/api/mining/pause", post(proxy_mining_pause))
+            .route("/api/mining/start", post(proxy_mining_start))
             .with_state(node);
 
         let addr = format!("0.0.0.0:{}", port);
@@ -78,6 +80,7 @@ async fn api_info(State(node): State<SharedNode>) -> impl IntoResponse {
         "miners": miners_count,
         "bonds": bonds_count,
         "shares_found": n.share_pool.total_shares_count(),
+        "mining_paused": n.mining_paused.load(std::sync::atomic::Ordering::Relaxed),
         "wallet": {
             "address": wallet_address,
             "miner_id": wallet_miner_id,
@@ -86,4 +89,26 @@ async fn api_info(State(node): State<SharedNode>) -> impl IntoResponse {
             "bond": own_bond,
         },
     }))
+}
+
+// ---- Proxies to the RPC on port 8545 ----
+
+async fn proxy_mining_pause() -> impl IntoResponse {
+    proxy_post("http://127.0.0.1:8545/mining/pause").await
+}
+
+async fn proxy_mining_start() -> impl IntoResponse {
+    proxy_post("http://127.0.0.1:8545/mining/start").await
+}
+
+async fn proxy_post(url: &str) -> Json<serde_json::Value> {
+    match reqwest::Client::new().post(url).send().await {
+        Ok(resp) => {
+            match resp.json::<serde_json::Value>().await {
+                Ok(v) => Json(v),
+                Err(e) => Json(json!({ "error": format!("parse: {}", e) })),
+            }
+        }
+        Err(e) => Json(json!({ "error": format!("request: {}", e) })),
+    }
 }
