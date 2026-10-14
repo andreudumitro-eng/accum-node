@@ -192,7 +192,18 @@ impl Node {
         println!("🔧 [4] Height: {}", height);
 
         println!("🔧 [5] Getting epoch...");
-        let epoch = storage.get_state::<u32>("epoch")?.unwrap_or(1);
+        let stored_epoch = storage.get_state::<u32>("epoch")?.unwrap_or(1);
+        let expected_epoch = (height / EPOCH_BLOCKS) as u32 + 1;
+        let epoch = if stored_epoch != expected_epoch {
+            println!(
+                "⚠️ Epoch normalized: {} → {} (height={}, EPOCH_BLOCKS={})",
+                stored_epoch, expected_epoch, height, EPOCH_BLOCKS
+            );
+            let _ = storage.save_state("epoch", &expected_epoch);
+            expected_epoch
+        } else {
+            stored_epoch
+        };
         println!("🔧 [6] Epoch: {}", epoch);
 
         println!("🔧 [7] Loading wallet...");
@@ -464,7 +475,7 @@ impl Node {
         self.total_emitted = self.storage.get_state::<u64>("total_emitted")?.unwrap_or(0);
         println!("   ✅ Total emitted: {} LYT", self.total_emitted);
 
-        // Check for incomplete epoch: if epoch_processing == N,
+                // Check for incomplete epoch: if epoch_processing == N,
         // the previous process_epoch_end did not finish.
         if let Some(processing_epoch) = self.storage.get_state::<u32>("epoch_processing")? {
             if processing_epoch == self.epoch {
@@ -472,13 +483,21 @@ impl Node {
                     "⚠️ Found incomplete epoch {} — rewards may have been partially paid",
                     processing_epoch
                 );
-                // Increment epoch so process_epoch_end never runs again.
-                // Any double-payment damage is already done — this only
-                // protects against a second run.
-                self.epoch = self.epoch.saturating_add(1);
+                // Don't blindly increment — instead, normalize epoch to match height.
+                // This handles the case where the node was restarted many times.
+                let expected_epoch = (self.height / EPOCH_BLOCKS) as u32 + 1;
+                if self.epoch < expected_epoch {
+                    self.epoch = expected_epoch;
+                } else {
+                    // If our epoch is already ahead (drift), don't advance further.
+                    // Leave it — the top-level normalization in Node::new will fix it.
+                }
                 let _ = self.storage.save_state("epoch", &self.epoch);
                 let _ = self.storage.delete_state("epoch_processing");
-                println!("   ✅ Epoch {} marked as completed (recovery)", processing_epoch);
+                println!(
+                    "   ✅ Epoch {} marked as completed (recovery, now epoch={})",
+                    processing_epoch, self.epoch
+                );
             }
         }
 
