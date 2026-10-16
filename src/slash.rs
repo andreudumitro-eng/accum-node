@@ -199,7 +199,7 @@ impl SlashValidator {
         storage.burn_bond(&proof.miner_id, bond.amount)?;
         
         // Логируем
-        println!("🔥 Бонд сожжен за эквивокацию: {} LYT", bond.amount);
+        println!("🔥 Бонд сожжен за эквивокацию: {}", crate::types::fmt_acm_short(bond.amount));
         
         // Обновляем статистику
         *self.equivocations.entry(proof.miner_id).or_insert(0) += 1;
@@ -228,7 +228,7 @@ impl SlashValidator {
         storage.burn_bond(&proof.miner_id, bond.amount)?;
         
         // Логируем
-        println!("🔥 Бонд сожжен за флуд невалидными шейрами: {} LYT", bond.amount);
+        println!("🔥 Бонд сожжен за флуд невалидными шейрами: {}", crate::types::fmt_acm_short(bond.amount));
         
         // Обновляем статистику
         *self.share_floods.entry(proof.miner_id).or_insert(0) += 1;

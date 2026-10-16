@@ -217,10 +217,9 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
 
             match storage.get_balance_by_address(address) {
                 Ok((balance_lyt, utxo_count)) => {
-                    let acm = balance_lyt as f64 / LYATORS_PER_ACM as f64;
                     println!("\n✅ Balance found:");
                     println!("   Address : {}", address);
-                    println!("   Balance : {} LYT  ({:.8} ACM)", balance_lyt, acm);
+                    println!("   Balance : {}", crate::types::fmt_acm(balance_lyt));
                     println!("   UTXOs   : {}", utxo_count);
                 }
                 Err(e) => {
@@ -255,7 +254,7 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
 
             println!("💳 From:   {}", wallet.address);
             println!("📤 To:     {}", to);
-            println!("💰 Amount: {} LYT", amount);
+            println!("💰 Amount: {}", crate::types::fmt_acm_short(amount));
 
             let storage = ProductionStorage::new("mainnet")?;
             let utxos = storage.get_utxos_by_address(&wallet.address)?;
@@ -280,7 +279,7 @@ fn handle_wallet_command(args: &[String]) -> Result<(), Box<dyn std::error::Erro
             let tx_hex = hex::encode(&tx_bytes);
 
             println!("\n✅ Transaction created and signed");
-            println!("   Fee: {} LYT", fee);
+            println!("   Fee: {}", crate::types::fmt_acm_short(fee));
             println!("   Size: {} bytes", tx_bytes.len());
 
             println!(
@@ -423,7 +422,7 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                 // Ensure the local bond exists.
                 if !node.bonds.contains_key(&miner_id) {
                     node.add_bond(miner_id, bond_amount);
-                    println!("💰 Bond added: {} LYT", bond_amount);
+                    println!("💰 Bond added: {}", crate::types::fmt_acm_short(bond_amount));
                 }
     
                 // Always broadcast our bond so peers know about us.

@@ -473,7 +473,7 @@ impl Node {
 
         println!("📂 Loading emission...");
         self.total_emitted = self.storage.get_state::<u64>("total_emitted")?.unwrap_or(0);
-        println!("   ✅ Total emitted: {} LYT", self.total_emitted);
+        println!("   ✅ Total emitted: {}", crate::types::fmt_acm_short(self.total_emitted));
 
                 // Check for incomplete epoch: if epoch_processing == N,
         // the previous process_epoch_end did not finish.
@@ -891,8 +891,9 @@ impl Node {
     pub fn add_bond(&mut self, miner_id: MinerId, amount: u64) {
         if amount < MINIMUM_BOND_LYT {
             println!(
-                "⚠️ Bond below minimum: {} LYT (min: {} LYT)",
-                amount, MINIMUM_BOND_LYT
+                "⚠️ Bond below minimum: {} (min: {})",
+                crate::types::fmt_acm_short(amount),
+                crate::types::fmt_acm_short(MINIMUM_BOND_LYT)
             );
             return;
         }
@@ -917,9 +918,9 @@ impl Node {
         }
 
         println!(
-            "💰 Bond added for {}...: {} LYT",
+            "💰 Bond added for {}...: {}",
             hex::encode(&miner_id[0..8]),
-            amount
+            crate::types::fmt_acm_short(amount)
         );
     }
 
@@ -1605,9 +1606,9 @@ impl Node {
                                 let _ = self.storage.save_miner(&miner_id, miner);
                             }
                             println!(
-                                "💰 BondBroadcast applied: {}...: {} LYT",
+                                "💰 BondBroadcast applied: {}...: {}",
                                 hex::encode(&miner_id[0..8]),
-                                amount
+                                crate::types::fmt_acm_short(amount)
                             );
                         }
                     }
@@ -3528,10 +3529,9 @@ impl Node {
         let epoch_reward = self.current_epoch_reward();
         let year = (self.height / (EPOCH_BLOCKS.saturating_mul(365)).max(1)) + 1;
         println!(
-            "   📆 Year {} — epoch reward: {} LYT ({} ACM)",
+            "   📆 Year {} — epoch reward: {}",
             year,
-            epoch_reward,
-            epoch_reward / LYATORS_PER_ACM
+            crate::types::fmt_acm_short(epoch_reward)
         );
 
         let available: u64 = if self.total_emitted >= MAX_SUPPLY_LYT {
@@ -3542,8 +3542,9 @@ impl Node {
         let effective_epoch_reward = epoch_reward.min(available);
         if effective_epoch_reward < epoch_reward {
             println!(
-                "   ⚠️ Epoch reward trimmed: {} → {} LYT (supply cap)",
-                epoch_reward, effective_epoch_reward
+                "   ⚠️ Epoch reward trimmed: {} → {} (supply cap)",
+                crate::types::fmt_acm_short(epoch_reward),
+                crate::types::fmt_acm_short(effective_epoch_reward)
             );
         }
 
@@ -3551,8 +3552,9 @@ impl Node {
         let miners_pool = effective_epoch_reward.saturating_sub(treasury_cut);
 
         println!(
-            "   🏦 Treasury (7%): {} LYT | Miners pool: {} LYT",
-            treasury_cut, miners_pool
+            "   🏦 Treasury (7%): {} | Miners pool: {}",
+            crate::types::fmt_acm_short(treasury_cut),
+            crate::types::fmt_acm_short(miners_pool)
         );
 
         if treasury_cut > 0 {
@@ -3588,7 +3590,7 @@ impl Node {
 
         let (total_rewards, rewarded_miners) = self.pay_epoch_rewards(&poci_results);
 
-        println!("   Total epoch rewards: {} LYT", total_rewards);
+        println!("   Total epoch rewards: {}", crate::types::fmt_acm_short(total_rewards));
         println!("   Rewarded miners: {}", rewarded_miners);
 
         let previous_commit_hash: Hash32 = self
@@ -3672,8 +3674,9 @@ impl Node {
         }
 
         println!(
-            "⚠️ Epoch reward {} LYT exceeds available supply {} LYT — trimming",
-            total_requested, available
+            "⚠️ Epoch reward {} exceeds available supply {} — trimming",
+            crate::types::fmt_acm_short(total_requested as u64),
+            crate::types::fmt_acm_short(available as u64)
         );
 
         if available == 0 {
@@ -3734,14 +3737,16 @@ impl Node {
                             Ok(_) => {
                                 if is_local {
                                     println!(
-                                        "   💰 Reward to self: {} LYT (shares={}, poci={})",
-                                        result.reward, result.shares, result.poci
+                                        "   💰 Reward to self: {} (shares={}, poci={})",
+                                        crate::types::fmt_acm_short(result.reward),
+                                        result.shares,
+                                        result.poci
                                     );
                                 } else {
                                     println!(
-                                        "   💰 Reward to {}...: {} LYT",
+                                        "   💰 Reward to {}...: {}",
                                         hex::encode(&result.miner_id[0..6]),
-                                        result.reward
+                                        crate::types::fmt_acm_short(result.reward)
                                     );
                                 }
                             }
@@ -3757,19 +3762,18 @@ impl Node {
                 None => {
                     if is_local {
                         println!(
-                            "   ⚠️ Local miner has no wallet; reward {} LYT was not created",
-                            result.reward
+                            "   ⚠️ Local miner has no wallet; reward {} was not created",
+                            crate::types::fmt_acm_short(result.reward)
                         );
                     } else {
                         println!(
-                            "   ⚠️ Miner {}... has no payout address, reward {} LYT lost",
+                            "   ⚠️ Miner {}... has no payout address, reward {} lost",
                             hex::encode(&result.miner_id[0..6]),
-                            result.reward
+                            crate::types::fmt_acm_short(result.reward)
                         );
                     }
                 }
             }
-
             if let Some(miner) = self.miners.get_mut(&result.miner_id) {
                 miner.total_rewards = miner.total_rewards.saturating_add(result.reward);
                 if let Err(e) = self.storage.save_miner(&result.miner_id, miner) {

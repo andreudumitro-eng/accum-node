@@ -562,3 +562,43 @@ pub fn current_timestamp() -> Timestamp {
         .unwrap()
         .as_secs()
 }
+
+/// Format an amount in LYT as a human-readable ACM string.
+///
+/// 1 ACM = 10,000,000 LYT.
+///
+/// Examples:
+///   291_500_000  →  "29.15000000 ACM"
+///   720_000_000  →  "72.00000000 ACM"
+///   10_000_000   →  "1.00000000 ACM"
+///   5            →  "0.00000050 ACM"
+pub fn fmt_acm(lyt: u64) -> String {
+    const LYT_PER_ACM: u64 = 10_000_000;
+    let whole = lyt / LYT_PER_ACM;
+    let frac = lyt % LYT_PER_ACM;
+    format!("{}.{:08} ACM", whole, frac)
+}
+
+/// Format an amount in LYT as a short ACM string (no trailing zeros).
+///
+/// Examples:
+///   291_500_000  →  "29.15 ACM"
+///   720_000_000  →  "72 ACM"
+///   10_000_000   →  "1 ACM"
+///   5            →  "0.0000005 ACM"
+pub fn fmt_acm_short(lyt: u64) -> String {
+    const LYT_PER_ACM: u64 = 10_000_000;
+    let whole = lyt / LYT_PER_ACM;
+    let frac = lyt % LYT_PER_ACM;
+
+    if frac == 0 {
+        return format!("{} ACM", whole);
+    }
+
+    // Trim trailing zeros from the fractional part.
+    let mut s = format!("{:08}", frac);
+    while s.ends_with('0') {
+        s.pop();
+    }
+    format!("{}.{} ACM", whole, s)
+}

@@ -133,9 +133,9 @@ impl EquivocationProof {
         storage.save_slash_record(height, &slash_record)?;
 
         println!(
-            "🔥 SLASHED: Miner {}... lost {} LYT for equivocation",
+            "🔥 SLASHED: Miner {}... lost {} for equivocation",
             hex::encode(&self.miner_id[0..8]),
-            amount
+            crate::types::fmt_acm_short(amount)
         );
 
         Ok(slash_record)
