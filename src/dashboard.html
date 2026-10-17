@@ -175,13 +175,12 @@
     50% { opacity: 0.4; }
   }
 
-  /* Log container */
   #log-container {
     font-family: 'JetBrains Mono', monospace;
     font-size: 12px;
     line-height: 1.6;
     background: #1E1E1E;
-    color: #D4D4D4;
+    color: #00FF00;
     padding: 16px;
     border-radius: 8px;
     height: 300px;
@@ -278,11 +277,17 @@
   </div>
 
 <script>
+  const LYT_PER_ACM = 10_000_000;
   let lastLogCount = 0;
 
   function fmt(n) {
     if (n === undefined || n === null) return '—';
     return Number(n).toLocaleString('en-US');
+  }
+
+  function acm(lyt) {
+    if (lyt === undefined || lyt === null) return '—';
+    return (Number(lyt) / LYT_PER_ACM).toFixed(8) + ' ACM';
   }
 
   async function refresh() {
@@ -291,8 +296,8 @@
       const d = await r.json();
 
       document.getElementById('wallet-address').textContent = d.wallet?.address || '—';
-      document.getElementById('wallet-balance').textContent = fmt(d.wallet?.balance) + ' LYT';
-      document.getElementById('wallet-bond').textContent = fmt(d.wallet?.bond) + ' LYT';
+      document.getElementById('wallet-balance').textContent = acm(d.wallet?.balance);
+      document.getElementById('wallet-bond').textContent = acm(d.wallet?.bond);
       document.getElementById('wallet-loyalty').textContent = d.wallet?.loyalty ?? '—';
       document.getElementById('wallet-utxo').textContent = fmt(d.wallet?.utxo_count);
 
@@ -329,27 +334,14 @@
 
       logs.forEach(log => {
         const line = document.createElement('div');
-        if (log.includes('[BLOCK]')) {
-          line.style.color = '#34D399';
-          line.style.fontWeight = 'bold';
-        } else if (log.includes('SHARE-SEND')) {
-          line.style.color = '#60A5FA';
-        } else if (log.includes('ERROR') || log.includes('❌') || log.includes('⚠️')) {
-          line.style.color = '#F87171';
-        } else if (log.includes('📤') || log.includes('📥')) {
-          line.style.color = '#FBBF24';
-        } else {
-          line.style.color = '#9CA3AF';
-        }
+        line.style.color = '#00FF00';
         line.textContent = log;
         container.appendChild(line);
       });
 
       container.scrollTop = container.scrollHeight;
       lastLogCount = logs.length;
-    } catch(e) {
-      // ignore
-    }
+    } catch(e) {}
   }
 
   async function miningAction(action) {

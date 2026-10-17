@@ -1581,14 +1581,19 @@ impl Node {
                         }
                     }
                     P2PMessage::Share(share) => {
-                        println!(
+                        let log_recv = format!(
                             "📥 SHARE-RECV miner={} prev={} hash={}",
                             hex::encode(&share.miner_id[0..6]),
                             hex::encode(&share.header.prev_hash[0..8]),
                             hex::encode(&share.hash[0..8]),
                         );
+                        println!("{}", log_recv);
+                        self.add_log(log_recv);
+
                         let accepted = self.add_share(share.clone());
-                        println!("   add_share -> {}", accepted);
+                        let log_acc = format!("   add_share -> {}", accepted);
+                        println!("{}", log_acc);
+                        self.add_log(log_acc);
                     
                         if accepted {
                             let msg = P2PMessage::Share(share);
@@ -3120,12 +3125,14 @@ impl Node {
                                let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
                                let _ = self.add_share(share.clone());
                        
-                               println!(
-                                   "📤 SHARE-SEND miner={} prev={} hash={}",
-                                   hex::encode(&share.miner_id[0..6]),
-                                   hex::encode(&share.header.prev_hash[0..8]),
-                                   hex::encode(&share.hash[0..8]),
-                               );
+                               let log_send = format!(
+                                "📤 SHARE-SEND miner={} prev={} hash={}",
+                                hex::encode(&share.miner_id[0..6]),
+                                hex::encode(&share.header.prev_hash[0..8]),
+                                hex::encode(&share.hash[0..8]),
+                            );
+                            println!("{}", log_send);
+                            self.add_log(log_send);
                                if let Some(p2p) = &mut self.p2p {
                                    p2p.broadcast(&P2PMessage::Share(share));
                                }
@@ -3218,14 +3225,15 @@ impl Node {
     
                 // Backup is handled outside the write-lock in main.rs.
                 use colored::Colorize;
-                println!(
-                    "\r\x1b[K{} {} {} {} {}",
-                    "[BLOCK]".green().bold(),
-                    format!("height={}", new_height).cyan(),
-                    format!("hash={}", hex::encode(&best_hash[0..8])).yellow(),
-                    format!("epoch={}", self.epoch).cyan(),
-                    format!("nonce={}", best_nonce).cyan(),
+                let log_block = format!(
+                    "[BLOCK] height={} hash={} epoch={} nonce={}",
+                    new_height,
+                    hex::encode(&best_hash[0..8]),
+                    self.epoch,
+                    best_nonce,
                 );
+                println!("\r\x1b[K{}", log_block.green().bold());
+                self.add_log(log_block);
     
                                // Broadcast the block to all peers.
                                if let Some(p2p) = &mut self.p2p {
@@ -3273,12 +3281,14 @@ impl Node {
                 let share = Share::new(self.miner_id, header, best_nonce, best_hash);
                 let _ = self.add_share(share.clone());
 
-                println!(
+                let log_send = format!(
                     "📤 SHARE-SEND miner={} prev={} hash={}",
                     hex::encode(&share.miner_id[0..6]),
                     hex::encode(&share.header.prev_hash[0..8]),
                     hex::encode(&share.hash[0..8]),
                 );
+                println!("{}", log_send);
+                self.add_log(log_send);
                 if let Some(p2p) = &mut self.p2p {
                     p2p.broadcast(&P2PMessage::Share(share));
                 }
@@ -3337,12 +3347,14 @@ impl Node {
                                 let share = Share::new(self.miner_id, header.clone(), best_nonce, best_hash);
                                 let _ = self.add_share(share.clone());
                         
-                                println!(
+                                let log_send = format!(
                                     "📤 SHARE-SEND miner={} prev={} hash={}",
                                     hex::encode(&share.miner_id[0..6]),
                                     hex::encode(&share.header.prev_hash[0..8]),
                                     hex::encode(&share.hash[0..8]),
                                 );
+                                println!("{}", log_send);
+                                self.add_log(log_send);
                                 if let Some(p2p) = &mut self.p2p {
                                     p2p.broadcast(&P2PMessage::Share(share));
                                 }
@@ -3434,16 +3446,18 @@ impl Node {
             self.create_checkpoint();
         }
 
-        // Log.
-        use colored::Colorize;
-        println!(
-            "\r\x1b[K{} {} {} {} {}",
-            "[BLOCK]".green().bold(),
-            format!("height={}", new_height).cyan(),
-            format!("hash={}", hex::encode(&best_hash[0..8])).yellow(),
-            format!("epoch={}", self.epoch).cyan(),
-            format!("nonce={}", best_nonce).cyan(),
-        );
+                // Log.
+                use colored::Colorize;
+                let log_block = format!(
+                    "[BLOCK] height={} hash={} epoch={} nonce={}",
+                    new_height,
+                    hex::encode(&best_hash[0..8]),
+                    self.epoch,
+                    best_nonce,
+                );
+                println!("\r\x1b[K{}", log_block.green().bold());
+                self.add_log(log_block);
+               
 
         // Broadcast the block to all peers.
         if let Some(p2p) = &mut self.p2p {
