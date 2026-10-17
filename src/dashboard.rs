@@ -18,6 +18,7 @@ pub fn start(node: SharedNode, port: u16) {
         let app = Router::new()
             .route("/", get(index))
             .route("/api/info", get(api_info))
+            .route("/api/logs", get(api_logs))
             .route("/api/mining/pause", post(proxy_mining_pause))
             .route("/api/mining/start", post(proxy_mining_start))
             .with_state(node);
@@ -89,6 +90,11 @@ async fn api_info(State(node): State<SharedNode>) -> impl IntoResponse {
             "bond": own_bond,
         },
     }))
+}
+
+async fn api_logs(State(node): State<SharedNode>) -> impl IntoResponse {
+    let n = node.read();
+    Json(n.recent_logs.clone())
 }
 
 // ---- Proxies to the RPC on port 8545 ----

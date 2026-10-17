@@ -174,6 +174,9 @@ pub struct Node {
     pub forks: HashMap<Hash32, Vec<Block>>,
     pub pending_rewards: HashMap<u32, Vec<(MinerId, u64)>>,
     pub last_resync_at: HashMap<u32, Timestamp>,
+
+         /// Recent log lines for the dashboard (ring buffer, max 100 lines)
+    pub recent_logs: Vec<String>,
 }
 
 impl Node {
@@ -257,6 +260,7 @@ impl Node {
             forks: HashMap::new(),
             pending_rewards: HashMap::new(),
             last_resync_at: HashMap::new(),
+            recent_logs: Vec::new(),
         };
         println!("🔧 [10] Node struct created");
 
@@ -2227,6 +2231,14 @@ impl Node {
             }
         }
     }
+        /// Append a line to the dashboard log buffer.
+    /// Keeps at most 100 recent lines.
+    pub fn add_log(&mut self, msg: String) {
+        if self.recent_logs.len() >= 100 {
+            self.recent_logs.remove(0);
+        }
+        self.recent_logs.push(msg);
+    }
 
     pub fn shutdown(&mut self) {
         if !is_saving_state() {
@@ -2450,15 +2462,18 @@ impl Node {
             return None;
         }
 
-        // Build a set of hashes from the foreign batch.
-        let mut foreign_hashes: std::collections::HashSet<Hash32> =
-            std::collections::HashSet::new();
+        // Collect hashes of foreign blocks.
+        let mut foreign_hashes = HashSet::new();
         for b in foreign_blocks {
             foreign_hashes.insert(b.header.hash(&mut self.argon2));
         }
 
-        // Walk OUR chain backward from tip to genesis, looking for the
-        // first block whose hash is in the foreign set.
+        // Also add prev_hash of the FIRST block — it points to the fork point.
+        if let Some(first) = foreign_blocks.first() {
+            foreign_hashes.insert(first.header.prev_hash);
+        }
+
+        // Walk our chain backward, looking for the first matching hash.
         let mut h = self.height;
         loop {
             if let Some(our_block) = self.storage.get_block(h).ok().flatten() {
@@ -2472,13 +2487,6 @@ impl Node {
             }
             h -= 1;
         }
-
-        // Fallback: genesis (both chains share it in practice).
-        if let Some(genesis) = self.storage.get_block(0).ok().flatten() {
-            let genesis_hash = genesis.header.hash(&mut self.argon2);
-            return Some((0, genesis_hash));
-        }
-
         None
     }
 
@@ -2500,38 +2508,38 @@ impl Node {
         }
 
         while self.height > target_height {
-            // Fetch the block we are about to roll back.
-            let block = self
-                .storage
-                .get_block(self.height)?
-                .ok_or_else(|| format!("block {} not found for rollback", self.height))?;
-
-            // Delete from storage.
-            self.storage.delete_block(self.height)?;
-
-            // Reverse UTXO changes.
-            self.rollback_utxo_set(&block);
-
-            // Remove from in-memory state.
-            let hash = block.header.hash(&mut self.argon2);
-            self.blocks.pop();
+            match self.storage.get_block(self.height) {
+                Ok(Some(block)) => {
+                    self.storage.delete_block(self.height)?;
+                    self.rollback_utxo_set(&block);
+                    let hash = block.header.hash(&mut self.argon2);
+                    self.block_hashes.remove(&hash);
+                }
+                Ok(None) => {
+                    // Block missing in storage (not saved due to interruption).
+                    // Just drop in-memory state.
+                    println!(
+                        "⚠️ Block {} missing in storage during rollback — skipping",
+                        self.height
+                    );
+                    if let Some(header) = self.blocks.pop() {
+                        let hash = header.hash(&mut self.argon2);
+                        self.block_hashes.remove(&hash);
+                    }
+                }
+                Err(e) => return Err(format!("get_block({}) failed: {}", self.height, e)),
+            }
             self.timestamps.pop();
-            self.block_hashes.remove(&hash);
             self.height -= 1;
         }
 
-        // Persist new height.
         let _ = self.storage.save_state("height", &self.height);
         self.cached_difficulty = None;
-
-        // Signal mining thread.
         self.chain_generation.fetch_add(1, AtomicOrdering::Relaxed);
         self.abort_mining.store(true, AtomicOrdering::Relaxed);
-
         println!("🔙 Rolled back to height {}", self.height);
         Ok(())
     }
-
         /// Apply a foreign branch starting from the given common ancestor.
     ///
     /// `foreign_blocks` should be ordered from the fork point upward —
