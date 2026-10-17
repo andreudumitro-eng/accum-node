@@ -91,13 +91,13 @@ pub const MAX_MESSAGES_PER_HOUR_PER_PEER: u32 = 1000;
 pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 pub const P2P_PORT: u16 = 30333;
 pub const RPC_PORT: u16 = 8545;
-pub const SYNC_TIMEOUT_SECS: u64 = 60;
+pub const SYNC_TIMEOUT_SECS: u64 = 120;
 pub const PEER_TIMEOUT_SECS: u64 = 300;
 pub const STATS_UPDATE_INTERVAL_MS: u64 = 100;
 pub const MINING_BATCH_SIZE: u64 = 100_000;
 
 pub const SYNC_BATCH_SIZE: u64 = 24;
-pub const SYNC_MAX_RETRIES: u32 = 3;
+pub const SYNC_MAX_RETRIES: u32 = 12;
 pub const SYNC_RETRY_DELAY_SECS: u64 = 10;
 pub const MAX_BLOCKS_IN_RESPONSE: u32 = 500;
 pub const BLOCK_REQUEST_TIMEOUT_SECS: u64 = 30;
