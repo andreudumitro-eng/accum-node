@@ -667,18 +667,26 @@ impl P2PNode {
     }
 
     pub fn connect_to_bootnodes(&mut self) {
+        use std::net::ToSocketAddrs;
+
         let bootnodes = self.bootnodes.clone();
         if bootnodes.is_empty() {
             println!("⚠️ No bootnodes configured");
             return;
         }
         for bootnode in &bootnodes {
-            match bootnode.parse::<SocketAddr>() {
-                Ok(addr) => match self.connect_to(addr) {
-                    Ok(_) => println!("✅ Connected to bootnode {}", addr),
-                    Err(e) => println!("❌ Failed to connect to bootnode {}: {}", addr, e),
-                },
-                Err(e) => println!("❌ Invalid bootnode address '{}': {}", bootnode, e),
+            match bootnode.to_socket_addrs() {
+                Ok(addrs) => {
+                    for addr in addrs {
+                        match self.connect_to(addr) {
+                            Ok(_) => println!("✅ Connected to bootnode {}", addr),
+                            Err(e) => println!("❌ Failed to connect to bootnode {}: {}", addr, e),
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("❌ Cannot resolve bootnode '{}': {}", bootnode, e);
+                }
             }
         }
     }
