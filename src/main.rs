@@ -584,6 +584,20 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                     &node_for_miner,
                     config.mining.threads.max(1) as u64,
                 );
+                                // Re-check peers: if we lost all peers while mining and solo
+                // is forbidden, drop the result — otherwise we create a fork
+                // that the sync layer cannot resolve.
+                let peers_now = {
+                    let node = node_for_miner.read();
+                    node.p2p.as_ref().map(|p| p.peer_count()).unwrap_or(0)
+                };
+                let solo_forbidden = peers_now == 0
+                    && !genesis_mode
+                    && !config.mining.allow_solo_without_peers;
+                if solo_forbidden {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    continue;
+                }
 
                 // ---- Phase 3: commit under a short write-lock. ----
                 {
