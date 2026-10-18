@@ -2438,27 +2438,6 @@ impl Node {
         Ok(())
     }
 
-        /// Find the deepest common block between our chain and the given
-    /// sequence of foreign blocks.
-    ///
-    /// `foreign_blocks` should be ordered from the fork point upward —
-    /// i.e. the first element is the block immediately after the fork.
-    /// We walk through them and check if any of their `prev_hash` values
-    /// correspond to a block already in our chain.
-    ///
-    /// Returns `(height, hash)` of the common ancestor, or `None` if no
-    /// common ancestor exists in our chain.
-        /// Find the deepest common block between our chain and the given
-    /// sequence of foreign blocks.
-    ///
-    /// `foreign_blocks` should be ordered from the fork point upward —
-    /// i.e. the first element is the block immediately after the fork.
-    ///
-    /// We build a set of foreign block hashes, then walk OUR chain
-    /// backward from the current tip to genesis. The first block whose
-    /// hash appears in the foreign set is the deepest common ancestor.
-    ///
-    /// Returns `(height, hash)` of the common ancestor, or `None`.
     pub fn find_common_ancestor(
         &mut self,
         foreign_blocks: &[Block],
@@ -2467,18 +2446,10 @@ impl Node {
             return None;
         }
 
-        let first = foreign_blocks.first()?;
-
-        // Fast path: prev_hash of first foreign block — the fork point.
-        if let Some(&h) = self.block_hashes.get(&first.header.prev_hash) {
-            return Some((h, first.header.prev_hash));
-        }
-
-        // Slow path: look for any foreign block hash in our chain.
         for b in foreign_blocks {
-            let h = b.header.hash(&mut self.argon2);
-            if let Some(&height) = self.block_hashes.get(&h) {
-                return Some((height, h));
+            let prev = b.header.prev_hash;
+            if let Some(&h) = self.block_hashes.get(&prev) {
+                return Some((h, prev));
             }
         }
 

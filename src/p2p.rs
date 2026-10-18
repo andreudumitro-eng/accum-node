@@ -1179,10 +1179,12 @@ impl SyncManager {
         let (common_height, _common_hash) = match node.find_common_ancestor(fork_blocks) {
             Some(x) => x,
             None => {
-                return Err(format!(
-                    "{}: fork detected but no common ancestor found",
-                    accepted
-                ));
+                println!("🔀 [sync] No common ancestor — rolling back to genesis (IBD)");
+                if let Err(e) = node.rollback_to(0) {
+                    return Err(format!("{}: rollback failed: {}", accepted, e));
+                }
+                self.local_height = 0;
+                (0, [0u8; 32])
             }
         };
 
