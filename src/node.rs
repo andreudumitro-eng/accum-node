@@ -2467,31 +2467,21 @@ impl Node {
             return None;
         }
 
-        // Collect hashes of foreign blocks.
-        let mut foreign_hashes = HashSet::new();
+        let first = foreign_blocks.first()?;
+
+        // Fast path: prev_hash of first foreign block — the fork point.
+        if let Some(&h) = self.block_hashes.get(&first.header.prev_hash) {
+            return Some((h, first.header.prev_hash));
+        }
+
+        // Slow path: look for any foreign block hash in our chain.
         for b in foreign_blocks {
-            foreign_hashes.insert(b.header.hash(&mut self.argon2));
+            let h = b.header.hash(&mut self.argon2);
+            if let Some(&height) = self.block_hashes.get(&h) {
+                return Some((height, h));
+            }
         }
 
-        // Also add prev_hash of the FIRST block — it points to the fork point.
-        if let Some(first) = foreign_blocks.first() {
-            foreign_hashes.insert(first.header.prev_hash);
-        }
-
-        // Walk our chain backward, looking for the first matching hash.
-        let mut h = self.height;
-        loop {
-            if let Some(our_block) = self.storage.get_block(h).ok().flatten() {
-                let our_hash = our_block.header.hash(&mut self.argon2);
-                if foreign_hashes.contains(&our_hash) {
-                    return Some((h, our_hash));
-                }
-            }
-            if h == 0 {
-                break;
-            }
-            h -= 1;
-        }
         None
     }
 
