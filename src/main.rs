@@ -548,8 +548,8 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
                         .as_ref()
                         .and_then(|p| p.best_peer_height())
                         .unwrap_or(our_height);
-                    let behind = best_peer.saturating_sub(our_height);
-                    let not_too_far_behind = behind <= 10;
+                        let behind = best_peer.saturating_sub(our_height);
+                        let not_too_far_behind = behind == 0;
 
                     let solo_ok = peers > 0
                         || genesis_mode
