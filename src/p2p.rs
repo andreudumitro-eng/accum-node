@@ -1225,7 +1225,7 @@ impl SyncManager {
         );
 
         // 1. Find common ancestor for the whole batch.
-        let (common_height, _common_hash) = match node.find_common_ancestor(fork_blocks) {
+        let (common_height, _common_hash) = match node.find_common_ancestor(fork_blocks, node.height) {
             Some(x) => x,
             None => {
                 println!("🔀 [sync] No common ancestor — rolling back to genesis (IBD)");

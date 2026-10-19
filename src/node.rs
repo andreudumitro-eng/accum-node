@@ -1562,19 +1562,21 @@ impl Node {
                     
                                 if is_prev_hash_race {
                                     // Pull/push race: not an attack.
-                                    // Do NOT reset the sync session — just retry shortly.
+                                    // Reorg мог изменить node.height — синхронизируем current_height,
+                                    // чтобы следующий GetBlocks шёл с правильной точки.
                                     println!(
-                                        "⚠️ Invalid prev_hash from {} (pull/push race) — will retry in 2s",
+                                        "⚠️ Invalid prev_hash from {} (pull/push race) — resyncing from current height",
                                         addr
                                     );
-                    
+
+                                    let current_node_height = self.height;
                                     if let Some(p2p) = self.p2p.as_mut() {
                                         if let Some(session) = p2p.sync_manager.active_session.as_mut() {
-                                            // Stay in Requesting — tick() will re-issue GetBlocks.
+                                            session.current_height = current_node_height;
                                             session.status = SyncStatus::Requesting;
                                             session.last_activity = current_timestamp();
+                                            session.blocks_received = 0;
                                         }
-                                        // Make sure tick() does not wait 2s before retrying.
                                         self.last_sync_request_time = 0;
                                     }
                                 } else {
@@ -2454,15 +2456,23 @@ impl Node {
     pub fn find_common_ancestor(
         &mut self,
         foreign_blocks: &[Block],
+        start_height: Height,
     ) -> Option<(Height, Hash32)> {
         if foreign_blocks.is_empty() {
             return None;
         }
 
-        for b in foreign_blocks {
-            let prev = b.header.prev_hash;
-            if let Some(&h) = self.block_hashes.get(&prev) {
-                return Some((h, prev));
+        // foreign_blocks[i] имеет высоту (start_height + i + 1).
+        // Ищем общий предок: нашу высоту prev_height = foreign_height - 1,
+        // где хеш нашего блока-родителя совпадает с prev_hash foreign-блока.
+        for i in 0..foreign_blocks.len() {
+            let foreign_height = start_height + i as u64 + 1;
+            let prev_height = foreign_height.saturating_sub(1);
+            if let Some(our_header) = self.blocks.get(prev_height as usize) {
+                let our_hash = our_header.hash(&mut self.argon2);
+                if our_hash == foreign_blocks[i].header.prev_hash {
+                    return Some((prev_height, our_hash));
+                }
             }
         }
 
@@ -2493,6 +2503,9 @@ impl Node {
                     self.rollback_utxo_set(&block);
                     let hash = block.header.hash(&mut self.argon2);
                     self.block_hashes.remove(&hash);
+                    if self.blocks.pop().is_none() {
+                        println!("⚠️ self.blocks was empty during rollback at height {}", self.height);
+                    }
                 }
                 Ok(None) => {
                     // Block missing in storage (not saved due to interruption).
