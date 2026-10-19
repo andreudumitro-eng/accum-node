@@ -388,13 +388,6 @@ impl PeerConnection {
                 peer_id,
                 ..
             } => {
-                // Ignore self-connection (peer_id == our local peer_id).
-                // This happens when the node dials its own bootnode IP.
-                if self.address.ip().is_loopback() {
-                    // local loopback — definitely us
-                    self.peer_id = *peer_id;
-                    return Ok(None);
-                }
 
                 self.peer_id = *peer_id;
                 self.height = Some(*height);
@@ -494,6 +487,7 @@ pub struct P2PNode {
     pub received_commits: HashMap<(u32, Hash32), HashSet<PeerId>>,
     pub agreed_commits: HashMap<u32, Hash32>,
     pub pending_share_requests: HashMap<(PeerId, u32), u32>,
+    pub self_addrs: HashSet<SocketAddr>,
 }
 
 impl P2PNode {
@@ -522,7 +516,39 @@ impl P2PNode {
             received_commits: HashMap::new(),
             agreed_commits: HashMap::new(),
             pending_share_requests: HashMap::new(),
+            self_addrs: {
+                let mut set = HashSet::new();
+                if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                    if sock.connect("8.8.8.8:80").is_ok() {
+                        if let Ok(local) = sock.local_addr() {
+                            set.insert(SocketAddr::new(local.ip(), port));
+                        }
+                    }
+                }
+                set.insert(SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                    port,
+                ));
+                set.insert(SocketAddr::new(
+                    std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                    port,
+                ));
+                set
+            },
         })
+    }
+
+    /// true, если addr указывает на этот же узел.
+    /// Два процесса не могут слушать один и тот же порт на одной машине —
+    /// совпадение порта с нашим это надёжный признак «это мы».
+    pub fn is_self_addr(&self, addr: &SocketAddr) -> bool {
+        if self.self_addrs.contains(addr) {
+            return true;
+        }
+        if addr.port() == self.port {
+            return true;
+        }
+        false
     }
 
     pub fn set_local_state(&mut self, height: Height, best_hash: Hash32) {
@@ -550,6 +576,14 @@ impl P2PNode {
     pub fn accept_connections(&mut self) -> Result<(), std::io::Error> {
         match self.listener.accept() {
             Ok((stream, addr)) => {
+                // === ЗАЩИТА: не принимать самого себя ===
+                if self.is_self_addr(&addr) {
+                    println!("⚠️ accept: refusing self-connection from {}", addr);
+                    drop(stream);
+                    return Ok(());
+                }
+                // ======================================
+
                 if !self.ddos_protection.check_connection_limit(addr) {
                     return Ok(());
                 }
@@ -646,6 +680,13 @@ impl P2PNode {
     }
 
     pub fn connect_to(&mut self, addr: SocketAddr) -> Result<(), std::io::Error> {
+        // === ЗАЩИТА: не подключаться к себе ===
+        if self.is_self_addr(&addr) {
+            println!("⚠️ connect_to: refusing self-connection to {}", addr);
+            return Ok(());
+        }
+        // ======================================
+
         if self.peers.contains_key(&addr) {
             return Ok(());
         }

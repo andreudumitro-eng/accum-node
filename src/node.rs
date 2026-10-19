@@ -1465,6 +1465,14 @@ impl Node {
                         best_hash,
                         peer_id,
                     } => {
+                        // === ЗАЩИТА ОТ САМОПОДКЛЮЧЕНИЯ ===
+                        if peer_id == p2p.local_peer_id {
+                            println!("⚠️ Self-connection detected from {}, banning", addr);
+                            peer.ban("Self-connection");
+                            return;
+                        }
+                        // ==================================
+
                         let latency = current_timestamp().saturating_sub(timestamp);
                         p2p.sync_manager
                             .update_peer(peer_id, addr, height, best_hash, latency);
@@ -1751,6 +1759,11 @@ impl Node {
                             if p == addr {
                                 continue;
                             }
+                            // === ЗАЩИТА: не добавлять свой адрес в known_peers ===
+                            if p2p.is_self_addr(&p) {
+                                continue;
+                            }
+                            // ==================================================
                             if !p2p.known_peers.contains(&p) && !p2p.peers.contains_key(&p) {
                                 if p2p.known_peers.len() >= MAX_KNOWN_PEERS {
                                     break;

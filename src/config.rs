@@ -60,7 +60,15 @@ impl Default for Config {
         Self {
             network: NetworkConfig {
                 port: P2P_PORT,
-                bootnodes: vec!["201.24.61.31:30333".to_string()],
+                bootnodes: std::env::var("ACCUM_BOOTNODES")
+                    .ok()
+                    .map(|s| {
+                        s.split(',')
+                            .map(|x| x.trim().to_string())
+                            .filter(|x| !x.is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_else(|| vec!["201.24.61.31:30333".to_string()]),
                 max_peers: MAX_PEERS,
                 seed_nodes: vec![],
                 dns_seeds: vec![],
