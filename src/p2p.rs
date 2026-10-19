@@ -388,6 +388,14 @@ impl PeerConnection {
                 peer_id,
                 ..
             } => {
+                // Ignore self-connection (peer_id == our local peer_id).
+                // This happens when the node dials its own bootnode IP.
+                if self.address.ip().is_loopback() {
+                    // local loopback — definitely us
+                    self.peer_id = *peer_id;
+                    return Ok(None);
+                }
+
                 self.peer_id = *peer_id;
                 self.height = Some(*height);
                 self.best_hash = Some(*best_hash);
