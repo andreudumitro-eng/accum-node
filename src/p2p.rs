@@ -545,9 +545,6 @@ impl P2PNode {
         if self.self_addrs.contains(addr) {
             return true;
         }
-        if addr.port() == self.port {
-            return true;
-        }
         false
     }
 
