@@ -18,6 +18,25 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::Ordering; 
+use std::time::Duration;
+use socket2::{SockRef, TcpKeepalive};
+
+/// Настраивает TCP keepalive на уже установленном соединении.
+/// Не забирает владение потоком (использует SockRef по ссылке).
+fn configure_keepalive(stream: &TcpStream) -> Result<(), std::io::Error> {
+    let keepalive = TcpKeepalive::new()
+        .with_time(Duration::from_secs(30))
+        .with_interval(Duration::from_secs(10));
+
+    // with_retries недоступен на Windows в socket2,
+    // поэтому добавляем его только для не-Windows платформ.
+    #[cfg(not(windows))]
+    let keepalive = keepalive.with_retries(3);
+
+    let sock_ref = SockRef::from(stream);
+    sock_ref.set_tcp_keepalive(&keepalive)?;
+    Ok(())
+}
 
 /// Проверка coinbase: сумма выходов coinbase ≤ block_reward + сумма fees.
 pub fn validate_block_coinbase(block: &Block, storage: &ProductionStorage) -> Result<(), String> {
@@ -589,6 +608,10 @@ impl P2PNode {
                     return Ok(());
                 }
 
+                if let Err(e) = configure_keepalive(&stream) {
+                    println!("⚠️ Failed to set TCP keepalive for {}: {}", addr, e);
+                }
+
                 let mut peer = PeerConnection::new(stream, addr);
 
                 if self.banned_peers.contains(&peer.get_peer_id()) {
@@ -693,6 +716,9 @@ impl P2PNode {
         }
 
         let stream = TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5))?;
+        if let Err(e) = configure_keepalive(&stream) {
+            println!("⚠️ Failed to set TCP keepalive for {}: {}", addr, e);
+        }
         let mut peer = PeerConnection::new(stream, addr);
 
         let version_msg = P2PMessage::Version {
