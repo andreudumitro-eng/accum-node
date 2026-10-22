@@ -78,7 +78,10 @@ impl Transaction {
 
         hasher.update(&self.locktime.to_le_bytes());
 
-        let digest = hasher.finalize();
+        let first_hash = hasher.finalize();
+        let mut hasher2 = Sha256::new();
+        hasher2.update(&first_hash);
+        let digest = hasher2.finalize();
         let mut result = [0u8; 32];
         result.copy_from_slice(&digest);
         result
@@ -345,4 +348,5 @@ mod tests {
         assert_eq!(balance, 3_000);
     }
 }
+
 

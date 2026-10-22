@@ -20,6 +20,7 @@ pub fn start(node: SharedNode, port: u16) {
             .route("/api/info", get(api_info))
             .route("/api/logs", get(api_logs))
             .route("/api/mining/pause", post(proxy_mining_pause))
+            .route("/api/mining/stop", post(proxy_mining_stop))
             .route("/api/mining/start", post(proxy_mining_start))
             .with_state(node);
 
@@ -71,10 +72,14 @@ async fn api_info(State(node): State<SharedNode>) -> impl IntoResponse {
         .unwrap_or(0);
 
     Json(json!({
-        "height": n.height,
+                "height": n.height,
         "epoch": n.epoch,
         "peers": peers,
         "is_syncing": is_syncing,
+        "uptime_formatted": "—",
+        "last_block_time": n.last_block_time_secs,
+        "blocks_mined": n.blocks_found,
+        "contribution": n.share_pool.total_shares_count(),
         "difficulty": n.last_difficulty().to_difficulty(),
         "hash_rate": n.last_hash_rate,
         "peak_hash_rate": n.peak_hash_rate,
@@ -103,6 +108,10 @@ async fn proxy_mining_pause() -> impl IntoResponse {
     proxy_post("http://127.0.0.1:8545/mining/pause").await
 }
 
+async fn proxy_mining_stop() -> impl IntoResponse {
+    proxy_post("http://127.0.0.1:8545/mining/stop").await
+}
+
 async fn proxy_mining_start() -> impl IntoResponse {
     proxy_post("http://127.0.0.1:8545/mining/start").await
 }
@@ -118,3 +127,5 @@ async fn proxy_post(url: &str) -> Json<serde_json::Value> {
         Err(e) => Json(json!({ "error": format!("request: {}", e) })),
     }
 }
+
+
