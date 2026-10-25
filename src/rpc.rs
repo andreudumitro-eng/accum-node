@@ -221,6 +221,27 @@ impl RpcServer {
         });
 
         let balance_node = self.node.clone();
+        let utxos_node = self.node.clone();
+        let utxos = warp::path!("utxos" / String)
+            .and(warp::get())
+            .map(move |address: String| {
+                let node = utxos_node.read();
+                match node.storage.get_utxos_by_address(&address) {
+                    Ok(list) => {
+                        let json_list: Vec<_> = list.iter().map(|((txid, index), txout)| {
+                            serde_json::json!({
+                                "txid": hex::encode(txid),
+                                "index": index,
+                                "value": txout.value,
+                                "script_pubkey": hex::encode(&txout.script_pubkey),
+                            })
+                        }).collect();
+                        warp::reply::json(&serde_json::json!({ "utxos": json_list }))
+                    }
+                    Err(e) => warp::reply::json(&serde_json::json!({ "error": e })),
+                }
+            });
+
         let balance = warp::path("balance")
             .and(warp::path::param::<String>())
             .and(warp::get())
@@ -278,6 +299,19 @@ impl RpcServer {
             }))
         });
 
+        let stop_node = node_info.clone();
+        let mining_stop = warp::path!("mining" / "stop")
+            .and(warp::post())
+            .map(move || {
+                let node = stop_node.read();
+                node.mining_paused
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                println!("⏹️  Mining stopped via RPC");
+                warp::reply::json(&serde_json::json!({
+                    "status": "stopped",
+                }))
+            });
+
         let pause_node = node_info.clone();
         let mining_pause = warp::path!("mining" / "pause")
             .and(warp::post())
@@ -304,16 +338,80 @@ impl RpcServer {
                 }))
             });
 
-            let routes = info
+                    // /attacks — real attack-detection telemetry
+        let attacks_node = self.node.clone();
+        let attacks = warp::path("attacks").and(warp::get()).map(move || {
+            let node = attacks_node.read();
+            let now = current_timestamp();
+
+            let (banned_ips, rate_limit_entries, global_req, attack_mode, global_rate) =
+                if let Some(p2p) = node.p2p.as_ref() {
+                    let d = &p2p.ddos_protection;
+                    (d.ip_blacklist.len(),
+                     d.rate_limits.len(),
+                     d.global_request_count,
+                     d.attack_mode,
+                     d.global_rate())
+                } else {
+                    (0, 0, 0, false, 0.0)
+                };
+
+            let ad = &node.attack_detection;
+            let attack_detected = ad.attack_detected;
+            let attack_type = ad.attack_type.clone().unwrap_or_else(|| "none".to_string());
+            let suspicious_peers = ad.suspicious_peers.len();
+            let hash_history_len = ad.hash_rate_history.len();
+
+            let mut total_invalid_ratio = 0.0f64;
+            let mut banned_miners = 0usize;
+            for m in node.miners.values() {
+                total_invalid_ratio += m.invalid_ratio;
+                if m.is_banned(now) { banned_miners += 1; }
+            }
+            let avg_invalid = if node.miners.is_empty() { 0.0 } else { total_invalid_ratio / node.miners.len() as f64 };
+
+            let (peers, known_peers, banned_peer_ids) = if let Some(p2p) = node.p2p.as_ref() {
+                (p2p.peer_count(), p2p.known_peers.len(), p2p.banned_peers.len())
+            } else {
+                (0, 0, 0)
+            };
+
+            let miners_cnt = node.miners.len().max(1) as f64;
+            let sybil_score = ((peers as f64 / miners_cnt) / 5.0).min(1.0);
+
+            warp::reply::json(&serde_json::json!({
+                "attack_detected": attack_detected,
+                "attack_type": attack_type,
+                "banned_ips": banned_ips,
+                "rate_limit_entries": rate_limit_entries,
+                "global_request_count": global_req,
+                "global_rate_per_sec": (global_rate * 100.0).round() / 100.0,
+                "attack_mode": attack_mode,
+                "peers": peers,
+                "known_peers": known_peers,
+                "banned_peer_ids": banned_peer_ids,
+                "suspicious_peers": suspicious_peers,
+                "avg_invalid_ratio": (avg_invalid * 10000.0).round() / 10000.0,
+                "banned_miners": banned_miners,
+                "sybil_score": (sybil_score * 100.0).round() / 100.0,
+                "hash_history_points": hash_history_len,
+                "timestamp": now,
+            }))
+        });
+
+        let routes = info
             .or(block)
             .or(send_tx)
             .or(peers)
             .or(miners)
             .or(balance)
+            .or(utxos)
             .or(mempool)
             .or(health)
+            .or(attacks)
             .or(mining_pause)
-            .or(mining_start);
+            .or(mining_start)
+            .or(mining_stop);
 
         println!("📡 RPC endpoints on port {}:", self.port);
         println!("   GET  /info       - node information");
@@ -331,3 +429,9 @@ impl RpcServer {
         Ok(())
     }
 }
+
+
+
+
+
+

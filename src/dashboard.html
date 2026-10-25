@@ -128,8 +128,8 @@ main{padding:15px}
   <div class="node-card">
     <div class="eyebrow">● NODE STATUS</div>
     <div class="node-state" id="sideStatus">Checking…</div>
-    <div class="line"><div class="tiny muted">UPTIME</div><div id="uptime">—</div></div>
-    <div class="line"><div class="tiny muted">VERSION</div><div id="version">—</div></div>
+    
+    
     <div class="line tiny" id="sideMessage">Waiting for node data</div>
   </div>
 </aside>
@@ -198,27 +198,30 @@ main{padding:15px}
  </article>
 </section>
 <section class="lower-grid">
- <article class="panel">
-  <div class="panel-head"><h2>HASHRATE HISTORY</h2><span class="tiny muted">This session</span></div>
-  <canvas class="chart" id="hashChart"></canvas><div class="chart-note" id="hashNote">Waiting for data</div>
- </article>
- <article class="panel" id="blocks">
-  <div class="panel-head"><h2>BLOCKS MINED</h2><span class="tiny muted">This session</span></div>
-  <canvas class="chart" id="blocksChart"></canvas><div class="chart-note" id="blocksNote">Waiting for data</div>
- </article>
- <article class="panel today-panel">
-  <div class="panel-head"><h2>TODAY'S SUMMARY</h2><span class="tiny muted">Node metrics</span></div>
-  <div class="stats3">
-    <div><span class="tiny muted">Blocks mined</span><strong id="blocksMined">—</strong></div>
-    <div><span class="tiny muted">Shares today</span><strong id="sharesToday">—</strong></div>
-    <div><span class="tiny muted">Rewards</span><strong id="rewards">—</strong></div>
-    <div><span class="tiny muted">Contribution</span><strong id="contribution">—</strong></div>
-    <div><span class="tiny muted">Best block</span><strong id="bestBlock">—</strong></div>
-    <div><span class="tiny muted">Epoch</span><strong id="epoch">—</strong></div>
+ <article class="panel" style="grid-column: span 2;">
+  <div class="panel-head"><h2>RECENT ACTIVITY</h2><span class="tiny muted">From node logs</span></div>
+  <div id="activity-log" style="font-family: monospace; font-size: 12px; line-height: 1.6; max-height: 200px; overflow-y: auto; background: #070e19; border: 1px solid #1d2b3d; border-radius: 7px; padding: 10px 12px;">
+    <div style="color: #8393a9; text-align: center; padding: 20px;">Waiting for events...</div>
   </div>
-  <div class="metric"><span>Uptime</span><strong id="uptimeStat">—</strong></div>
-  <div class="metric"><span>Current hashrate</span><strong id="hashrateNow">—</strong></div>
  </article>
+ <article class="panel">
+  <div class="panel-head">
+    <h2>ATTACK MONITOR</h2>
+    <span class="tag" id="atk-flag">CLEAN</span>
+  </div>
+  <div class="metric-list">
+    <div class="metric"><span>Attack detected</span><strong id="atk-detected" style="color:var(--green);">no</strong></div>
+    <div class="metric"><span>Attack type</span><strong id="atk-type">—</strong></div>
+    <div class="metric"><span>Sybil score</span><strong id="atk-sybil" style="color:var(--green);">—</strong></div>
+    <div class="metric"><span>Invalid ratio (avg)</span><strong id="atk-invalid" style="color:var(--green);">—</strong></div>
+    <div class="metric"><span>Banned IPs</span><strong id="atk-ips">—</strong></div>
+    <div class="metric"><span>Banned miners</span><strong id="atk-miners">—</strong></div>
+    <div class="metric"><span>Peers / known</span><strong id="atk-peers">—</strong></div>
+    <div class="metric"><span>Global req/sec</span><strong id="atk-rate">—</strong></div>
+  </div>
+  <canvas id="attackChart" class="chart" height="100" style="margin-top:10px;"></canvas>
+  <div class="chart-note" id="atk-note">Sybil score history · /api/attacks</div>
+</article>
 </section>
 <section class="panel logs" id="logs">
  <div class="panel-head"><h2>NODE LOGS</h2><div class="log-controls">
@@ -530,8 +533,130 @@ window.addEventListener('resize', () => { drawLine('hashChart', state.historyHas
 refresh(); setTimer();
 })();
 </script>
+<script>
+  // ... (твой старый скрипт останется выше, мы просто добавим обновление для новых блоков)
+  async function refreshDashboard() {
+    try {
+      const res = await fetch('/api/info');
+      const data = await res.json();
+
+      // 1. Network Health
+      document.getElementById('health-miners').textContent = data.miners || 0;
+      document.getElementById('health-time').textContent = (data.avg_block_time_secs || 0).toFixed(1) + 's';
+      // Пока нет поля для невалидных шар, ставим 0 (или можно добавить в rpc.rs)
+      document.getElementById('health-valid').textContent = data.shares_found || 0;
+      document.getElementById('health-invalid').textContent = '0';
+
+      // 2. Recent Activity (берем логи из api/logs)
+      const logsRes = await fetch('/logs');
+      const logs = await logsRes.json();
+      const container = document.getElementById('activity-log');
+      
+      if (Array.isArray(logs) && logs.length > 0) {
+        // Берем последние 15 логов и разворачиваем (новые сверху)
+        const recent = logs.slice(-15).reverse();
+        container.innerHTML = recent.map(line => {
+          let color = '#8393a9';
+          if (line.includes('BOND')) color = '#f5bd26';
+          if (line.includes('Transaction')) color = '#20dc72';
+          if (line.includes('BLOCK')) color = '#168cff';
+          return `<div style="color: ${color}; border-bottom: 1px solid #1d2b3d; padding: 4px 0;">${line}</div>`;
+        }).join('');
+      }
+    } catch (e) {
+      console.error("Dashboard refresh error:", e);
+    }
+  }
+
+  // Обновляем каждые 3 секунды
+  setInterval(refreshDashboard, 3000);
+  refreshDashboard();
+</script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const hist = [];
+  const canvas = $('attackChart');
+
+  function draw() {
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.clientWidth || 320, h = 100, dpr = window.devicePixelRatio || 1;
+    canvas.width = w*dpr; canvas.height = h*dpr;
+    ctx.scale(dpr, dpr); ctx.clearRect(0,0,w,h);
+    ctx.strokeStyle = '#203044';
+    for (let i=1;i<4;i++){ctx.beginPath();ctx.moveTo(0,h*i/4);ctx.lineTo(w,h*i/4);ctx.stroke();}
+    if (hist.length < 2) {
+      ctx.fillStyle = '#71839a'; ctx.font = '12px system-ui';
+      ctx.fillText('Collecting...', 10, h/2); return;
+    }
+    ctx.beginPath();
+    hist.forEach((v,i)=>{
+      const x = i*w/(hist.length-1);
+      const y = h-4 - v*(h-8);
+      if (i) ctx.lineTo(x,y); else ctx.moveTo(x,y);
+    });
+    const last = hist[hist.length - 1];
+    ctx.strokeStyle = last>0.7?'#ff4d5c':last>0.4?'#f5bd26':'#20dc72';
+    ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  async function refresh() {
+    try {
+      const a = await fetch('/api/attacks').then(r=>r.json());
+      const score = a.sybil_score ?? 0;
+      hist.push(score);
+      if (hist.length > 60) hist.shift();
+      draw();
+
+      const flag = $('atk-flag');
+      if (flag) {
+        if (a.attack_detected) {
+          flag.textContent = 'ATTACK';
+          flag.style.background = '#431c27';
+          flag.style.borderColor = '#7e2837';
+          flag.style.color = '#ff7783';
+        } else {
+          flag.textContent = 'CLEAN';
+          flag.style.background = '#08291d';
+          flag.style.borderColor = '#126c42';
+          flag.style.color = '#20dc72';
+        }
+      }
+
+      const det = $('atk-detected');
+      if (det) { det.textContent = a.attack_detected ? 'yes' : 'no'; det.style.color = a.attack_detected ? 'var(--red)' : 'var(--green)'; }
+
+      if ($('atk-type')) $('atk-type').textContent = a.attack_type || '—';
+
+      const sy = $('atk-sybil');
+      if (sy) { sy.textContent = Math.round(score*100)+'%'; sy.style.color = score>0.7?'var(--red)':score>0.4?'var(--yellow)':'var(--green)'; }
+
+      const inv = (a.avg_invalid_ratio ?? 0) * 100;
+      const invEl = $('atk-invalid');
+      if (invEl) { invEl.textContent = inv.toFixed(2)+'%'; invEl.style.color = inv>10?'var(--red)':inv>2?'var(--yellow)':'var(--green)'; }
+
+      if ($('atk-ips')) $('atk-ips').textContent    = a.banned_ips ?? '—';
+      if ($('atk-miners')) $('atk-miners').textContent = a.banned_miners ?? '—';
+      if ($('atk-peers')) $('atk-peers').textContent  = (a.peers ?? '—') + ' / ' + (a.known_peers ?? '—');
+      if ($('atk-rate')) $('atk-rate').textContent   = (a.global_rate_per_sec ?? 0).toFixed(2);
+    } catch (e) { console.error('attacks:', e); }
+  }
+
+  window.addEventListener('resize', draw);
+  setInterval(refresh, 3000);
+  refresh();
+})();
+</script>
 </body>
 </html>
 '@
 Set-Content -Path "src\dashboard.html" -Value $html -Encoding UTF8
+
+
+
+
+
+
+
 

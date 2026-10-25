@@ -406,6 +406,7 @@ impl Transaction {
         }
 
         let mut data = Vec::new();
+        
 
         data.extend_from_slice(&self.version.to_le_bytes());
         data.extend_from_slice(&(self.inputs.len() as u32).to_le_bytes());
@@ -607,3 +608,5 @@ impl Transaction {
         Ok(tx)
     }
 }
+
+

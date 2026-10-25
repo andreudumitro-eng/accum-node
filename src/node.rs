@@ -1426,7 +1426,16 @@ impl Node {
                         sync  = sync_status.bright_black(),
                     );
                     let _ = std::io::stdout().flush();
-                    self.last_stats_time = now;
+                    // === Attack detection ===
+        {
+            let hr = self.last_hash_rate as f64;
+            self.attack_detection.record_hash_rate(hr);
+            if self.last_block_time_secs > 0 {
+                self.attack_detection.record_block_interval(self.last_block_time_secs);
+            }
+            self.attack_detection.detect_51_percent_attack(hr);
+        }
+        self.last_stats_time = now;
                 }
         
                 Ok(())
@@ -3476,6 +3485,8 @@ impl Node {
 
                 // Apply bond if this output is a bond UTXO.
                 if let Some(miner_id) = output.extract_miner_id() {
+                    println!("💰 BOND CREATED: +{} LYT for miner {}", output.value, hex::encode(&miner_id[0..8]));
+                        self.add_log(format!("💰 BOND CREATED: +{} LYT for miner {}", output.value, hex::encode(&miner_id[0..8])));
                     if output.value >= MINIMUM_BOND_LYT {
                         let bond = Bond::new(output.value, self.height, miner_id);
                         self.bonds.insert(miner_id, bond.clone());
@@ -3964,3 +3975,6 @@ pub fn header_with_nonce_hash(
     buf[108..116].copy_from_slice(&nonce.to_le_bytes());
     argon2.hash(&buf)
 }
+
+
+
