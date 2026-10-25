@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="en">
 <head>
@@ -63,23 +62,9 @@ main{min-width:0;padding:20px 24px 15px}
 .tag{border:1px solid #126c42;color:var(--green);border-radius:6px;padding:3px 10px;background:#08291d;font-size:12px}
 .network-wrap{display:grid;grid-template-columns:1fr 145px;gap:5px;align-items:center}
 .network-art{width:100%;max-width:145px}
-.lower-grid{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:12px;margin-top:12px}
+.lower-grid{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
 .chart{height:155px;width:100%;display:block}
 .chart-note{font-size:11px;color:var(--muted);margin-top:4px}
-.stats3{display:grid;grid-template-columns:repeat(3,1fr)}
-.stats3>div{padding:8px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-width:0}
-.stats3>div:nth-child(3n){border-right:0}
-.stats3>div:nth-last-child(-n+3){border-bottom:0}
-.stats3 strong{display:block;font-size:15px;margin-top:3px;overflow-wrap:anywhere}
-.logs{margin-top:12px}
-.log-controls{display:flex;gap:7px;flex-wrap:wrap}
-.log-output{background:#070e19;border:1px solid #1d2b3d;border-radius:7px;padding:10px 12px;height:190px;overflow:auto;font:12px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace}
-.log-line{white-space:pre-wrap;overflow-wrap:anywhere}
-.log-time{color:#9aabc2}
-.log-level{display:inline-block;min-width:39px;text-align:center;border-radius:3px;margin:0 7px 0 4px;padding:0 3px;background:#10331f;color:#55ee8b}
-.log-level.warn{background:#46380d;color:#ffd24d}
-.log-level.error{background:#4b1d27;color:#ff7783}
-.empty{color:#8393a9;padding:25px 8px;text-align:center}
 .footer{text-align:center;color:#8493a8;font-size:11px;padding:14px 0 0}
 .notice{color:#9caec4;font-size:11px;margin-top:8px}
 .error-banner{display:none;border:1px solid #71303a;background:#2b1119;color:#ffb2bb;padding:10px 12px;border-radius:8px;margin-bottom:12px}
@@ -87,8 +72,7 @@ main{min-width:0;padding:20px 24px 15px}
 @media(max-width:1180px){
 .grid{grid-template-columns:1fr 1fr}
 .grid .network-panel{grid-column:1/-1}
-.lower-grid{grid-template-columns:1fr 1fr}
-.lower-grid .today-panel{grid-column:1/-1}
+.lower-grid{grid-template-columns:1fr}
 }
 @media(max-width:760px){
 .app{grid-template-columns:1fr}
@@ -100,16 +84,11 @@ main{min-width:0;padding:20px 24px 15px}
 main{padding:15px}
 .topbar,.mining-control{align-items:flex-start;flex-direction:column}
 .grid,.lower-grid{grid-template-columns:1fr}
-.grid .network-panel,.lower-grid .today-panel{grid-column:auto}
+.grid .network-panel{grid-column:auto}
 .network-wrap{grid-template-columns:1fr 115px}
 .network-art{max-width:115px}
 .top-actions{width:100%}
 .status-pill{flex:1}
-.stats3{grid-template-columns:repeat(2,1fr)}
-.stats3>div:nth-child(3n){border-right:1px solid var(--line)}
-.stats3>div:nth-child(2n){border-right:0}
-.stats3>div:nth-last-child(-n+3){border-bottom:1px solid var(--line)}
-.stats3>div:nth-last-child(-n+2){border-bottom:0}
 }
 </style>
 </head>
@@ -120,16 +99,10 @@ main{padding:15px}
   <nav class="nav">
     <a class="active" href="#dashboard"><span class="ico">⌂</span>Dashboard</a>
     <a href="#wallet"><span class="ico">▣</span>Wallet</a>
-    <a href="#mining"><span class="ico">⚒</span>Mining</a>
-    <a href="#network"><span class="ico">◎</span>Network</a>
-    <a href="#blocks"><span class="ico">⬡</span>Blocks</a>
-    <a href="#logs"><span class="ico">☷</span>Logs</a>
   </nav>
   <div class="node-card">
     <div class="eyebrow">● NODE STATUS</div>
     <div class="node-state" id="sideStatus">Checking…</div>
-    
-    
     <div class="line tiny" id="sideMessage">Waiting for node data</div>
   </div>
 </aside>
@@ -198,12 +171,6 @@ main{padding:15px}
  </article>
 </section>
 <section class="lower-grid">
- <article class="panel" style="grid-column: span 2;">
-  <div class="panel-head"><h2>RECENT ACTIVITY</h2><span class="tiny muted">From node logs</span></div>
-  <div id="activity-log" style="font-family: monospace; font-size: 12px; line-height: 1.6; max-height: 200px; overflow-y: auto; background: #070e19; border: 1px solid #1d2b3d; border-radius: 7px; padding: 10px 12px;">
-    <div style="color: #8393a9; text-align: center; padding: 20px;">Waiting for events...</div>
-  </div>
- </article>
  <article class="panel">
   <div class="panel-head">
     <h2>ATTACK MONITOR</h2>
@@ -222,14 +189,6 @@ main{padding:15px}
   <canvas id="attackChart" class="chart" height="100" style="margin-top:10px;"></canvas>
   <div class="chart-note" id="atk-note">Sybil score history · /api/attacks</div>
 </article>
-</section>
-<section class="panel logs" id="logs">
- <div class="panel-head"><h2>NODE LOGS</h2><div class="log-controls">
-  <button class="btn" id="pauseLogsBtn">Ⅱ Pause view</button>
-  <button class="btn" id="clearLogsBtn">Clear</button>
-  <button class="btn blue" id="downloadLogsBtn">Download .txt</button>
- </div></div>
- <div class="log-output" id="logOutput"><div class="empty">Waiting for logs…</div></div>
 </section>
 <footer class="footer">ACCUM Node Dashboard · Data is supplied by your node API</footer>
 </main>
@@ -534,45 +493,6 @@ refresh(); setTimer();
 })();
 </script>
 <script>
-  // ... (твой старый скрипт останется выше, мы просто добавим обновление для новых блоков)
-  async function refreshDashboard() {
-    try {
-      const res = await fetch('/api/info');
-      const data = await res.json();
-
-      // 1. Network Health
-      document.getElementById('health-miners').textContent = data.miners || 0;
-      document.getElementById('health-time').textContent = (data.avg_block_time_secs || 0).toFixed(1) + 's';
-      // Пока нет поля для невалидных шар, ставим 0 (или можно добавить в rpc.rs)
-      document.getElementById('health-valid').textContent = data.shares_found || 0;
-      document.getElementById('health-invalid').textContent = '0';
-
-      // 2. Recent Activity (берем логи из api/logs)
-      const logsRes = await fetch('/logs');
-      const logs = await logsRes.json();
-      const container = document.getElementById('activity-log');
-      
-      if (Array.isArray(logs) && logs.length > 0) {
-        // Берем последние 15 логов и разворачиваем (новые сверху)
-        const recent = logs.slice(-15).reverse();
-        container.innerHTML = recent.map(line => {
-          let color = '#8393a9';
-          if (line.includes('BOND')) color = '#f5bd26';
-          if (line.includes('Transaction')) color = '#20dc72';
-          if (line.includes('BLOCK')) color = '#168cff';
-          return `<div style="color: ${color}; border-bottom: 1px solid #1d2b3d; padding: 4px 0;">${line}</div>`;
-        }).join('');
-      }
-    } catch (e) {
-      console.error("Dashboard refresh error:", e);
-    }
-  }
-
-  // Обновляем каждые 3 секунды
-  setInterval(refreshDashboard, 3000);
-  refreshDashboard();
-</script>
-<script>
 (() => {
   const $ = id => document.getElementById(id);
   const hist = [];
@@ -650,13 +570,3 @@ refresh(); setTimer();
 </script>
 </body>
 </html>
-'@
-Set-Content -Path "src\dashboard.html" -Value $html -Encoding UTF8
-
-
-
-
-
-
-
-
