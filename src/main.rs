@@ -384,24 +384,12 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
     let config = Config::load()?;
     println!("📋 Loaded configuration from ~/.accum/config.toml");
 
-    // Создаем пустую оболочку (мгновенно)
-    let node_arc = Node::new_shell(config.clone())?;
+    let node_arc = Node::new(config.clone())?;
 
-    // Запускаем дашборд СРАЗУ
-    println!("🌐 Starting dashboard on port 8555...");
+    // Web dashboard (starts immediately, before loading blocks)
     {
         let dashboard_node = node_arc.clone();
         dashboard::start(dashboard_node, 8555);
-    }
-
-    // Загружаем блоки в фоне
-    {
-        let load_node = node_arc.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = Node::load_state_chunked(&load_node) {
-                eprintln!("❌ Failed to load state: {}", e);
-            }
-        });
     }
 
 
