@@ -386,6 +386,13 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
 
     let node_arc = Node::new(config.clone())?;
 
+    // Web dashboard (starts immediately, before loading blocks)
+    {
+        let dashboard_node = node_arc.clone();
+        dashboard::start(dashboard_node, 8555);
+    }
+
+
        // ---- RPC in a separate OS thread with its own tokio runtime ----
        if config.rpc.enabled {
         let rpc_node = node_arc.clone();
@@ -406,11 +413,6 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
         println!("📡 RPC server started on port {}", config.rpc.port);
     }
 
-    // Web dashboard
-    {
-        let dashboard_node = node_arc.clone();
-        dashboard::start(dashboard_node, 8555);
-    }
 
     // ---- Bond for the local miner ----
     {
