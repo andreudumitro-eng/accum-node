@@ -170,27 +170,37 @@ main{padding:15px}
   </div>
  </article>
 </section>
-<section class="lower-grid">
- <article class="panel">
-  <div class="panel-head">
-    <h2>ATTACK MONITOR</h2>
-    <span class="tag" id="atk-flag">CLEAN</span>
-  </div>
-  <div class="metric-list">
-    <div class="metric"><span>Attack detected</span><strong id="atk-detected" style="color:var(--green);">no</strong></div>
-    <div class="metric"><span>Attack type</span><strong id="atk-type">—</strong></div>
-    <div class="metric"><span>Sybil score</span><strong id="atk-sybil" style="color:var(--green);">—</strong></div>
-    <div class="metric"><span>Invalid ratio (avg)</span><strong id="atk-invalid" style="color:var(--green);">—</strong></div>
-    <div class="metric"><span>Banned IPs</span><strong id="atk-ips">—</strong></div>
-    <div class="metric"><span>Banned miners</span><strong id="atk-miners">—</strong></div>
-    <div class="metric"><span>Peers / known</span><strong id="atk-peers">—</strong></div>
-    <div class="metric"><span>Global req/sec</span><strong id="atk-rate">—</strong></div>
-  </div>
-  <canvas id="attackChart" class="chart" height="100" style="margin-top:10px;"></canvas>
-  <div class="chart-note" id="atk-note">Sybil score history · /api/attacks</div>
-</article>
-</section>
+
 <footer class="footer">ACCUM Node Dashboard · Data is supplied by your node API</footer>
+<section class="lower-grid" style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-top:12px;align-items:start;">
+  <article class="panel logs" id="logs">
+    <div class="panel-head"><h2>NODE LOGS</h2><div class="log-controls">
+      <button class="btn" id="pauseLogsBtn">Ⅱ Pause view</button>
+      <button class="btn" id="clearLogsBtn">Clear</button>
+      <button class="btn blue" id="downloadLogsBtn">Download .txt</button>
+    </div></div>
+    <div class="log-output" id="logOutput"><div class="empty">Waiting for logs…</div></div>
+  </article>
+
+  <article class="panel">
+    <div class="panel-head">
+      <h2>ATTACK MONITOR</h2>
+      <span class="tag" id="atk-flag">CLEAN</span>
+    </div>
+    <div class="metric-list">
+      <div class="metric"><span>Attack detected</span><strong id="atk-detected" style="color:var(--green);">no</strong></div>
+      <div class="metric"><span>Attack type</span><strong id="atk-type">—</strong></div>
+      <div class="metric"><span>Sybil score</span><strong id="atk-sybil" style="color:var(--green);">—</strong></div>
+      <div class="metric"><span>Invalid ratio (avg)</span><strong id="atk-invalid" style="color:var(--green);">—</strong></div>
+      <div class="metric"><span>Banned IPs</span><strong id="atk-ips">—</strong></div>
+      <div class="metric"><span>Banned miners</span><strong id="atk-miners">—</strong></div>
+      <div class="metric"><span>Peers / known</span><strong id="atk-peers">—</strong></div>
+      <div class="metric"><span>Global req/sec</span><strong id="atk-rate">—</strong></div>
+    </div>
+    <canvas id="attackChart" class="chart" height="100" style="margin-top:10px;"></canvas>
+    <div class="chart-note" id="atk-note">Sybil score history · /api/attacks</div>
+  </article>
+</section>
 </main>
 </div>
 <script>
