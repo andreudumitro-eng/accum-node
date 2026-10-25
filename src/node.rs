@@ -177,12 +177,100 @@ pub struct Node {
 
          /// Recent log lines for the dashboard (ring buffer, max 100 lines)
     pub recent_logs: Vec<String>,
+    pub load_progress: Arc<AtomicU64>,
+    pub load_stage: Arc<parking_lot::Mutex<String>>,
 }
 
 impl Node {
     // ------------------------------------------------------------------
     // Construction / bootstrap
     // ------------------------------------------------------------------
+
+    pub fn new_shell(config: Config) -> Result<Arc<RwLock<Self>>, String> {
+        println!("🔧 [shell] Creating storage...");
+        let storage = ProductionStorage::new("mainnet")?;
+        let height = storage.get_height()?;
+        let stored_epoch = storage.get_state::<u32>("epoch")?.unwrap_or(1);
+        let epoch = (height / EPOCH_BLOCKS) as u32 + 1;
+        let _ = stored_epoch;
+        let wallet = Self::load_or_create_wallet(&storage)?;
+        let miner_id = wallet.miner_id;
+        let now = current_timestamp();
+
+        let node = Self {
+            height, epoch,
+            blocks: Vec::new(), block_hashes: HashMap::new(), timestamps: Vec::new(),
+            storage, mempool: Vec::new(), miners: HashMap::new(), bonds: HashMap::new(),
+            loyalty: HashMap::new(),
+            share_pool: SharePool::new(config.advanced.share_pool_memory_mb),
+            argon2: Argon2Cache::new(ARGON2_CACHE_SIZE),
+            p2p: None, blocks_found: 0, shares_found: 0, start_time: now, miner_id,
+            last_hash_rate: 0, peak_hash_rate: 0, wallet: Some(wallet),
+            config: config.clone(), slashing_pool: SlashingPool::new(),
+            attack_detection: AttackDetection::new(), checkpoints: Vec::new(),
+            ddos_protection: DDoSProtection::new(), processed_txids: HashMap::new(),
+            sync_manager: SyncManager::new(), total_emitted: 0, last_block_time_secs: 0,
+            last_nonce: 0, last_stats_time: now, last_sync_request_time: 0,
+            last_share_time: now, last_reconnect_time: 0, last_version_broadcast: 0,
+            last_register_broadcast: 0, cached_difficulty: None,
+            abort_mining: Arc::new(AtomicBool::new(false)),
+            mining_paused: Arc::new(AtomicBool::new(false)),
+            chain_generation: Arc::new(AtomicU64::new(0)),
+            forks: HashMap::new(), pending_rewards: HashMap::new(),
+            last_resync_at: HashMap::new(), recent_logs: Vec::new(),
+            load_progress: Arc::new(AtomicU64::new(0)),
+            load_stage: Arc::new(parking_lot::Mutex::new("starting".to_string())),
+        };
+        Ok(Arc::new(RwLock::new(node)))
+    }
+
+    pub fn load_state_chunked(node_arc: &Arc<RwLock<Self>>) -> Result<(), String> {
+        const BLOCK_CHUNK: u64 = 200;
+        let height = { node_arc.read().height };
+        if height == 0 {
+            let mut n = node_arc.write();
+            n.init_genesis();
+            n.load_checkpoints()?;
+            if !n.verify_genesis_signature() {
+                return Err("Genesis verification failed".to_string());
+            }
+            n.share_pool.current_epoch = n.epoch;
+            n.load_progress.store(100, AtomicOrdering::Relaxed);
+            *n.load_stage.lock() = "ready".to_string();
+            return Ok(());
+        }
+
+        let mut h: u64 = 0;
+        while h <= height {
+            let end = (h + BLOCK_CHUNK).min(height + 1);
+            {
+                let mut n = node_arc.write();
+                for hh in h..end {
+                    if let Some(block) = n.storage.get_block(hh)? {
+                        let hash = block.header.hash(&mut n.argon2);
+                        n.blocks.push(block.header.clone());
+                        n.block_hashes.insert(hash, hh);
+                        n.timestamps.push(block.header.timestamp);
+                    }
+                }
+                let pct = ((end as f64) / (height as f64 + 1.0) * 90.0) as u64;
+                n.load_progress.store(pct.min(90), AtomicOrdering::Relaxed);
+            }
+            h = end;
+            std::thread::yield_now();
+        }
+        {
+            let mut n = node_arc.write();
+            n.load_checkpoints()?;
+            if !n.verify_genesis_signature() {
+                return Err("Genesis verification failed".to_string());
+            }
+            n.share_pool.current_epoch = n.epoch;
+            n.load_progress.store(100, AtomicOrdering::Relaxed);
+            *n.load_stage.lock() = "ready".to_string();
+        }
+        Ok(())
+    }
 
     pub fn new(config: Config) -> Result<Arc<RwLock<Self>>, String> {
         println!("🔧 [1] Creating storage...");
@@ -261,6 +349,8 @@ impl Node {
             pending_rewards: HashMap::new(),
             last_resync_at: HashMap::new(),
             recent_logs: Vec::new(),
+            load_progress: Arc::new(AtomicU64::new(0)),
+            load_stage: Arc::new(parking_lot::Mutex::new("starting".to_string())),
         };
         println!("🔧 [10] Node struct created");
 
