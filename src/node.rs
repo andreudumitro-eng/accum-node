@@ -251,6 +251,10 @@ impl Node {
                         n.block_hashes.insert(hash, hh);
                         n.timestamps.push(block.header.timestamp);
                     }
+                    if hh % 10 == 0 || hh == end - 1 {
+                        let pct = ((hh as f64) / (height as f64) * 100.0) as u64;
+                        println!("   ⏳ Loading block {}/{} ({}%)", hh, height, pct);
+                    }
                 }
                 let pct = ((end as f64) / (height as f64 + 1.0) * 90.0) as u64;
                 n.load_progress.store(pct.min(90), AtomicOrdering::Relaxed);
