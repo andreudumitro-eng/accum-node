@@ -384,14 +384,25 @@ async fn run_node(genesis_mode: bool) -> Result<(), Box<dyn std::error::Error>> 
     let config = Config::load()?;
     println!("📋 Loaded configuration from ~/.accum/config.toml");
 
-    let node_arc = Node::new(config.clone())?;
+    // Создаем пустую оболочку (мгновенно)
+    let node_arc = Node::new_shell(config.clone())?;
 
-    // Web dashboard (starts immediately, before loading blocks)
+    // Запускаем дашборд СРАЗУ
+    println!("🌐 Starting dashboard on port 8555...");
     {
         let dashboard_node = node_arc.clone();
         dashboard::start(dashboard_node, 8555);
     }
 
+    // Загружаем блоки в фоне
+    {
+        let load_node = node_arc.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = Node::load_state_chunked(&load_node) {
+                eprintln!("❌ Failed to load state: {}", e);
+            }
+        });
+    }
 
        // ---- RPC in a separate OS thread with its own tokio runtime ----
        if config.rpc.enabled {
