@@ -4,92 +4,38 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ACCUM — Node Dashboard</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{color-scheme:dark;--bg:#070d17;--panel:#0e1725;--panel2:#0a1220;--line:#243247;--muted:#9aa9bd;--text:#edf4ff;--blue:#168cff;--green:#20dc72;--yellow:#f5bd26;--red:#ff4d5c}
+:root{color-scheme:dark;--bg:#070d17;--panel:#0e1725;--line:#243247;--muted:#9aa9bd;--text:#edf4ff;--blue:#168cff;--green:#20dc72;--yellow:#f5bd26;--red:#ff4d5c}
 *{box-sizing:border-box}
-body{margin:0;background:radial-gradient(ellipse at 70% 0%,#101e32 0,transparent 42%),var(--bg);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-button{font:inherit;color:inherit;cursor:pointer}
-button:disabled{opacity:.42;cursor:not-allowed}
-.app{min-height:100vh;display:grid;grid-template-columns:220px minmax(0,1fr)}
-.sidebar{border-right:1px solid var(--line);padding:22px 15px;display:flex;flex-direction:column;gap:28px;background:#08111e}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,sans-serif}
+.app{min-height:100vh;display:grid;grid-template-columns:240px minmax(0,1fr)}
+.sidebar{border-right:1px solid var(--line);padding:22px 15px;display:flex;flex-direction:column;background:#08111e}
 .brand{display:flex;gap:10px;align-items:center;padding:0 7px 22px;border-bottom:1px solid var(--line)}
 .brand strong{font-size:21px;letter-spacing:1px;display:block}
 .brand small{display:block;font-size:10px;letter-spacing:2px;color:#b7c4d5}
-.nav{display:grid;gap:6px}
+.nav{display:grid;gap:6px;margin-top:20px}
 .nav a{padding:11px 12px;border-radius:8px;text-decoration:none;color:#d6e0ed;display:flex;gap:12px;align-items:center}
 .nav a.active,.nav a:hover{background:#0c2c58;color:white}
-.nav .ico{width:18px;text-align:center;color:#9eb4ce}
-.node-card{margin-top:auto;border:1px solid var(--line);border-radius:10px;padding:15px;background:linear-gradient(140deg,#111e2e,#0a1220)}
-.muted{color:var(--muted)}.tiny{font-size:11px}
-.node-state{color:var(--green);font-size:17px;margin:7px 0 12px}
-.node-card .line{border-top:1px solid var(--line);padding-top:10px;margin-top:10px}
-main{min-width:0;padding:20px 24px 15px}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;border-bottom:1px solid var(--line);padding:0 0 18px;margin-bottom:20px}
+.wallet-btn{margin-top:20px;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;background:#0d5933;border:1px solid #126b3d;border-radius:8px;color:white;text-decoration:none;font-weight:600;font-size:14px}
+.wallet-btn:hover{background:#126b3d}
+main{min-width:0;padding:20px 24px 15px;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;border-bottom:1px solid var(--line);padding:0 0 18px;margin-bottom:20px;flex-shrink:0}
 .topbar h1{font-size:22px;margin:0 0 2px}
-.top-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.status-pill,.btn,.selectlike{border:1px solid var(--line);border-radius:7px;padding:10px 13px;background:#0c1523}
-.status-pill{min-width:145px}
+.status-pill{border:1px solid var(--line);border-radius:7px;padding:10px 13px;background:#0c1523;min-width:145px}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--green);margin-right:8px}
-.btn:hover{border-color:#4b78ad}
-.btn.primary{background:#0d5933;border-color:#126b3d}
-.btn.warn{background:#4b3b0a;border-color:#806314}
-.btn.danger{background:#431c27;border-color:#7e2837}
-.btn.blue{background:#0b2d56;border-color:#164f91}
-.btnrow{display:flex;gap:8px;flex-wrap:wrap}
-.panel{border:1px solid var(--line);border-radius:10px;background:linear-gradient(145deg,rgba(17,27,42,.96),rgba(10,18,31,.97));padding:16px;min-width:0;box-shadow:0 8px 24px #00000012}
-.panel-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:14px}
-.panel h2{font-size:13px;margin:0;font-weight:750;letter-spacing:.25px}
-.eyebrow{font-size:11px;letter-spacing:.7px;color:#c7d5e6}
-.mining-control{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}
-.mining-control p{margin:4px 0 0;color:var(--muted)}
-.grid{display:grid;grid-template-columns:1.2fr 1fr 1.35fr;gap:12px}
-.wallet-address{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere;padding:9px 0 14px;border-bottom:1px solid var(--line);color:#dce8f8}
-.stats2{display:grid;grid-template-columns:1fr 1fr}
-.mini-stat{padding:12px 8px;border-bottom:1px solid var(--line);min-width:0}
-.mini-stat:nth-child(odd){border-right:1px solid var(--line);padding-left:0}
-.mini-stat:nth-child(even){padding-left:15px}
-.mini-stat:nth-last-child(-n+2){border-bottom:0}
-.mini-stat .value{font-size:16px;margin-top:2px;overflow-wrap:anywhere}
-.blue-text{color:#1da0ff}.green-text{color:var(--green)}.yellow-text{color:var(--yellow)}
-.metric-list{display:grid;gap:0}
-.metric{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid #1e2b3d}
+.panel{border:1px solid var(--line);border-radius:10px;background:linear-gradient(145deg,rgba(17,27,42,.96),rgba(10,18,31,.97));padding:16px;display:flex;flex-direction:column;min-height:0}
+.panel-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:14px;flex-shrink:0}
+.panel h2{font-size:13px;margin:0;font-weight:750}
+.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;flex-shrink:0}
+.metric{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #1e2b3d}
 .metric:last-child{border:0}
-.metric span:first-child{color:#b8c5d7}
-.metric strong{font-weight:650;text-align:right;overflow-wrap:anywhere}
 .tag{border:1px solid #126c42;color:var(--green);border-radius:6px;padding:3px 10px;background:#08291d;font-size:12px}
-.network-wrap{display:grid;grid-template-columns:1fr 145px;gap:5px;align-items:center}
-.network-art{width:100%;max-width:145px}
-.lower-grid{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
-.chart{height:155px;width:100%;display:block}
-.chart-note{font-size:11px;color:var(--muted);margin-top:4px}
-.footer{text-align:center;color:#8493a8;font-size:11px;padding:14px 0 0}
-.notice{color:#9caec4;font-size:11px;margin-top:8px}
-.error-banner{display:none;border:1px solid #71303a;background:#2b1119;color:#ffb2bb;padding:10px 12px;border-radius:8px;margin-bottom:12px}
-.error-banner.show{display:block}
-@media(max-width:1180px){
-.grid{grid-template-columns:1fr 1fr}
-.grid .network-panel{grid-column:1/-1}
-.lower-grid{grid-template-columns:1fr}
-}
-@media(max-width:760px){
-.app{grid-template-columns:1fr}
-.sidebar{padding:12px;border-right:0;border-bottom:1px solid var(--line);gap:12px}
-.brand{padding-bottom:12px}
-.nav{display:flex;overflow:auto}
-.nav a{white-space:nowrap;padding:9px}
-.node-card{display:none}
-main{padding:15px}
-.topbar,.mining-control{align-items:flex-start;flex-direction:column}
-.grid,.lower-grid{grid-template-columns:1fr}
-.grid .network-panel{grid-column:auto}
-.network-wrap{grid-template-columns:1fr 115px}
-.network-art{max-width:115px}
-.top-actions{width:100%}
-.status-pill{flex:1}
-}
+.tag.red{border-color:#7e2837;color:#ff7783;background:#431c27}
+.logs-panel{flex:1;display:flex;flex-direction:column;min-height:0;margin-bottom:0}
+.log-output{flex:1;overflow-y:auto;background:#070e19;border:1px solid #1d2b3d;border-radius:7px;padding:12px;font:12px ui-monospace,monospace;color:#a0b0c4;word-break:break-all}
+.log-line{padding:2px 0;border-bottom:1px solid #1d2b3d}
+.log-line:last-child{border-bottom:none}
 </style>
 </head>
 <body>
@@ -97,486 +43,95 @@ main{padding:15px}
 <aside class="sidebar">
   <div class="brand"><div><strong>ACCUM</strong><small>FAIR MINING</small></div></div>
   <nav class="nav">
-    <a class="active" href="#dashboard"><span class="ico">⌂</span>Dashboard</a>
-    <a href="#wallet"><span class="ico">▣</span>Wallet</a>
+    <a class="active" href="#"><span>⌂</span>Dashboard</a>
   </nav>
-  <div class="node-card">
-    <div class="eyebrow">● NODE STATUS</div>
-    <div class="node-state" id="sideStatus">Checking…</div>
-    <div class="line tiny" id="sideMessage">Waiting for node data</div>
-  </div>
+  <a href="#" class="wallet-btn"><span>💼</span>Open Wallet</a>
 </aside>
-<main id="dashboard">
+<main>
 <header class="topbar">
-  <div><h1>Dashboard</h1><div class="muted">Overview of your ACCUM node</div></div>
-  <div class="top-actions">
-    <div class="status-pill"><span class="dot" id="statusDot"></span><strong id="topStatus">Connecting</strong><div class="tiny muted" id="heightTop">Waiting for node data</div></div>
-    <button class="btn" id="refreshBtn">⟳ Refresh now</button>
-    <div class="selectlike">● Auto-refresh:
-      <select id="refreshRate" style="background:transparent;border:0;color:inherit">
-        <option value="3">3s</option><option value="5">5s</option><option value="10">10s</option><option value="30">30s</option><option value="0">Off</option>
-      </select>
-    </div>
-  </div>
+  <div><h1>Dashboard</h1><div style="color:var(--muted)">Overview of your ACCUM node</div></div>
+  <div><div class="status-pill"><span class="dot" id="statusDot"></span><strong id="topStatus">Connecting</strong><div style="color:var(--muted);font-size:11px" id="heightTop">Waiting...</div></div></div>
 </header>
-<div class="error-banner" id="errorBanner"></div>
-<section class="panel mining-control" id="mining">
-  <div><h2>MINING CONTROL</h2><p>Manage mining operation</p><div class="notice" id="controlNote">Commands are sent to the node API.</div></div>
-  <div class="btnrow">
-    <button class="btn primary" id="startBtn">▶ Start mining</button>
-    <button class="btn warn" id="pauseBtn">Ⅱ Pause mining</button>
-    <button class="btn danger" id="stopBtn">■ Stop mining</button>
-  </div>
-</section>
+
 <section class="grid">
- <article class="panel" id="wallet">
-  <div class="panel-head"><h2>▣ &nbsp;WALLET OVERVIEW</h2><span class="tiny muted">From node API</span></div>
-  <div class="tiny muted">Address</div><div class="wallet-address" id="walletAddress">Not provided by API</div>
-  <div class="stats2">
-    <div class="mini-stat"><div class="muted">Balance</div><div class="value blue-text" id="balance">—</div><div class="tiny muted" id="balanceUnit"></div></div>
-    <div class="mini-stat"><div class="muted">Bond / Stake</div><div class="value" id="bond">—</div><div class="tiny muted" id="bondUnit"></div></div>
-    <div class="mini-stat"><div class="muted">Loyalty</div><div class="value" id="loyalty">—</div></div>
-    <div class="mini-stat"><div class="muted">UTXO count</div><div class="value" id="utxo">—</div></div>
-  </div>
+ <article class="panel">
+  <div class="panel-head"><h2>⚒ MINING STATUS</h2><span class="tag" id="miningTag">RUNNING</span></div>
+  <div class="metric"><span>Height</span><strong id="height">—</strong></div>
+  <div class="metric"><span>Hashrate</span><strong id="hashrate">—</strong></div>
+  <div class="metric"><span>Difficulty</span><strong id="difficulty">—</strong></div>
  </article>
  <article class="panel">
-  <div class="panel-head"><h2>⚒ &nbsp;MINING STATUS</h2><span class="tag" id="miningTag">UNKNOWN</span></div>
-  <div class="metric-list">
-    <div class="metric"><span>Mining state</span><strong id="miningState">—</strong></div>
-    <div class="metric"><span>Hashrate</span><strong id="hashrate">—</strong></div>
-    <div class="metric"><span>Difficulty</span><strong id="difficulty">—</strong></div>
-    <div class="metric"><span>Shares found</span><strong id="shares">—</strong></div>
-    <div class="metric"><span>Accepted / rejected</span><strong id="acceptedRejected">—</strong></div>
-  </div>
+  <div class="panel-head"><h2>🛡 ATTACK MONITOR</h2><span class="tag" id="atk-tag">CLEAN</span></div>
+  <div class="metric"><span>Detected</span><strong id="atk-detected">no</strong></div>
+  <div class="metric"><span>Sybil Score</span><strong id="atk-sybil">—</strong></div>
+  <div class="metric"><span>Peers</span><strong id="atk-peers">—</strong></div>
  </article>
- <article class="panel network-panel" id="network">
-  <div class="panel-head"><h2>◎ &nbsp;NETWORK</h2><span class="tag">NODE API</span></div>
-  <div class="network-wrap">
-    <div class="metric-list">
-      <div class="metric"><span>Network</span><strong id="networkName">—</strong></div>
-      <div class="metric"><span>Peers</span><strong id="peers">—</strong></div>
-      <div class="metric"><span>Sync status</span><strong id="syncStatus">—</strong></div>
-      <div class="metric"><span>Last block</span><strong id="lastBlock">—</strong></div>
-      <div class="metric"><span>Latency</span><strong id="latency">—</strong></div>
-    </div>
-    <svg class="network-art" viewBox="0 0 160 160" role="img" aria-label="Network node illustration">
-      <g fill="none" stroke="#24507c" stroke-width="1.4">
-        <path d="M80 80L30 38L17 92L54 132L113 137L143 87L126 32L80 80L54 132M30 38L126 32M17 92L143 87M54 132L126 32M30 38L113 137"/>
-      </g>
-      <g fill="#168cff" stroke="#7cc5ff" stroke-width="1">
-        <circle cx="80" cy="80" r="9"/><circle cx="30" cy="38" r="5"/><circle cx="17" cy="92" r="5"/><circle cx="54" cy="132" r="5"/><circle cx="113" cy="137" r="5"/><circle cx="143" cy="87" r="5"/><circle cx="126" cy="32" r="5"/>
-      </g>
-    </svg>
-  </div>
+ <article class="panel">
+  <div class="panel-head"><h2>◎ NETWORK</h2></div>
+  <div class="metric"><span>Peers</span><strong id="peers">—</strong></div>
+  <div class="metric"><span>Sync status</span><strong id="sync">—</strong></div>
+  <div class="metric"><span>Mempool</span><strong id="mempool">—</strong></div>
  </article>
 </section>
 
-<footer class="footer">ACCUM Node Dashboard · Data is supplied by your node API</footer>
-<section class="lower-grid" style="display:grid;grid-template-columns:2fr 1fr;gap:12px;margin-top:12px;align-items:start;">
-  <article class="panel logs" id="logs">
-    <div class="panel-head"><h2>NODE LOGS</h2><div class="log-controls">
-      <button class="btn" id="pauseLogsBtn">Ⅱ Pause view</button>
-      <button class="btn" id="clearLogsBtn">Clear</button>
-      <button class="btn blue" id="downloadLogsBtn">Download .txt</button>
-    </div></div>
-    <div class="log-output" id="logOutput"><div class="empty">Waiting for logs…</div></div>
-  </article>
-
-  <article class="panel">
-    <div class="panel-head">
-      <h2>ATTACK MONITOR</h2>
-      <span class="tag" id="atk-flag">CLEAN</span>
-    </div>
-    <div class="metric-list">
-      <div class="metric"><span>Attack detected</span><strong id="atk-detected" style="color:var(--green);">no</strong></div>
-      <div class="metric"><span>Attack type</span><strong id="atk-type">—</strong></div>
-      <div class="metric"><span>Sybil score</span><strong id="atk-sybil" style="color:var(--green);">—</strong></div>
-      <div class="metric"><span>Invalid ratio (avg)</span><strong id="atk-invalid" style="color:var(--green);">—</strong></div>
-      <div class="metric"><span>Banned IPs</span><strong id="atk-ips">—</strong></div>
-      <div class="metric"><span>Banned miners</span><strong id="atk-miners">—</strong></div>
-      <div class="metric"><span>Peers / known</span><strong id="atk-peers">—</strong></div>
-      <div class="metric"><span>Global req/sec</span><strong id="atk-rate">—</strong></div>
-    </div>
-    <canvas id="attackChart" class="chart" height="100" style="margin-top:10px;"></canvas>
-    <div class="chart-note" id="atk-note">Sybil score history · /api/attacks</div>
-  </article>
+<section class="panel logs-panel">
+ <div class="panel-head">
+   <h2>NODE LOGS</h2>
+   <button class="btn" onclick="document.getElementById('logOutput').innerHTML=''">Clear</button>
+ </div>
+ <div class="log-output" id="logOutput"><div style="color:#71839a;text-align:center;padding:20px">Waiting for logs...</div></div>
 </section>
+
 </main>
 </div>
+
 <script>
-(() => {
-'use strict';
 const $ = id => document.getElementById(id);
-const state = { busy: false, timer: null, logsPaused: false, logs: [], lastLogSignature: '', historyHash: [], historyBlocks: [], lastInfo: null };
-const LYT_PER_ACM = 10_000_000;
-
-function set(id, value) { const el = $(id); if (el) el.textContent = value ?? '—'; }
-function showError(message) { const el = $('errorBanner'); el.textContent = message; el.classList.add('show'); }
-function clearError() { const el = $('errorBanner'); el.classList.remove('show'); el.textContent = ''; el.style.borderColor = ''; el.style.background = ''; el.style.color = ''; }
-
-async function getJSON(url) {
-  const response = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`HTTP ${response.status} at ${url}`);
-  return response.json();
-}
-async function postJSON(url) {
-  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-  if (!response.ok) throw new Error(`HTTP ${response.status} at ${url}`);
-  const text = await response.text();
-  if (!text) return {};
-  try { return JSON.parse(text); } catch { return text; }
-}
-function unwrap(raw) {
-  if (!raw || typeof raw !== 'object') return raw;
-  for (const key of ['data', 'result', 'info', 'node']) {
-    if (raw[key] && typeof raw[key] === 'object' && !Array.isArray(raw[key])) return raw[key];
-  }
-  return raw;
-}
-function pick(obj, paths) {
-  for (const path of paths) {
-    let value = obj;
-    for (const key of path.split('.')) {
-      if (value == null || typeof value !== 'object') { value = undefined; break; }
-      value = value[key];
-    }
-    if (value !== undefined && value !== null) return value;
-  }
-  return undefined;
-}
-function fmt(value, fallback = '—') {
-  if (value === undefined || value === null || value === '') return fallback;
-  if (typeof value === 'object') return JSON.stringify(value);
-  return String(value);
-}
-function asNumber(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number(value);
-    if (Number.isFinite(n)) return n;
-  }
-  return null;
-}
-function acm(lyt) {
-  if (lyt === undefined || lyt === null) return '—';
-  return (Number(lyt) / LYT_PER_ACM).toFixed(4) + ' ACM';
-}
-function statusLabel(data) {
-  const value = pick(data, ['status', 'nodeStatus', 'node.status', 'state', 'health.status']);
-  if (value === undefined) return 'Connected';
-  if (typeof value === 'boolean') return value ? 'Online' : 'Offline';
-  const text = String(value).toLowerCase();
-  if (text.includes('offline') || text.includes('stopped') || text.includes('error') || text === 'false') return 'Offline';
-  if (text.includes('sync') || text.includes('starting')) return 'Syncing';
-  if (text.includes('online') || text.includes('running') || text.includes('healthy') || text === 'true') return 'Online';
-  return 'Connected';
-}
-
-function applyInfo(raw) {
-  const d = unwrap(raw) || {};
-  state.lastInfo = d;
-  const height = pick(d, ['height', 'blockHeight', 'block_height', 'chain.height', 'blockchain.height', 'mining.height', 'bestBlock.height']);
-  const version = pick(d, ['version', 'nodeVersion', 'node.version', 'appVersion']);
-  const uptime = pick(d, ['uptime_formatted', 'uptime', 'nodeUptime', 'node.uptime', 'stats.uptime']);
-  const status = statusLabel(d);
-
-  set('topStatus', status); set('sideStatus', status);
-  set('heightTop', height !== undefined ? `Live · Height ${fmt(height)}` : 'Connected · Height unavailable');
-  $('statusDot').style.background = status === 'Offline' ? 'var(--red)' : status === 'Syncing' ? 'var(--yellow)' : 'var(--green)';
-  set('height', fmt(height));
-  set('bestBlock', fmt(pick(d, ['bestBlock', 'best_block', 'chain.bestBlock', 'blockchain.bestBlock']) ?? height));
-  set('version', fmt(version, 'v1.0.0 (dev)')); 
-  set('uptime', fmt(uptime)); set('uptimeStat', fmt(uptime));
-  set('sideMessage', status === 'Offline' ? 'Node reports offline' : 'Node data received');
-  set('epoch', fmt(pick(d, ['epoch', 'mining.epoch', 'chain.epoch'])));
-
-  const hr = pick(d, ['hashrate', 'hashRate', 'hash_rate', 'mining.hashrate', 'mining.hashRate', 'stats.hashrate', 'miner.hashrate']);
-  const hrNum = asNumber(hr);
-  const hrText = hr === undefined ? 'Not exposed by API' : `${fmt(hr)} ${pick(d, ['hashrateUnit', 'hashRateUnit', 'mining.hashrateUnit']) || 'H/s'}`;
-  set('hashrate', hrText); set('hashrateNow', hrText);
-  if (hrNum !== null) {
-    state.historyHash.push(hrNum);
-    if (state.historyHash.length > 48) state.historyHash.shift();
-    drawLine('hashChart', state.historyHash);
-    set('hashNote', 'Session history · values received from API');
-  } else {
-    set('hashNote', 'Hashrate field not found in /api/info response');
-    drawLine('hashChart', []);
-  }
-
-  set('difficulty', fmt(pick(d, ['difficulty', 'mining.difficulty', 'network.difficulty'])));
-  const shares = pick(d, ['shares', 'sharesFound', 'shares_found', 'mining.shares', 'mining.sharesFound', 'stats.shares']);
-  set('shares', fmt(shares));
-  set('sharesToday', fmt(pick(d, ['sharesToday', 'shares_today', 'stats.sharesToday']) ?? shares));
-  set('acceptedRejected', (() => {
-    const accepted = pick(d, ['acceptedShares', 'accepted_shares', 'mining.acceptedShares']);
-    const rejected = pick(d, ['rejectedShares', 'rejected_shares', 'mining.rejectedShares']);
-    if (accepted === undefined && rejected === undefined) return 'Not exposed';
-    return `${fmt(accepted)} / ${fmt(rejected)}`;
-  })());
-
-  const paused = d.mining_paused === true;
-  const miningText = paused ? 'Paused' : 'Running';
-  set('miningState', miningText);
-  set('miningTag', miningText.toUpperCase());
-  $('miningTag').style.borderColor = paused ? 'var(--yellow)' : 'var(--green)';
-  $('miningTag').style.color = paused ? 'var(--yellow)' : 'var(--green)';
-
-  set('peers', fmt(pick(d, ['peers', 'peerCount', 'peersConnected', 'network.peers', 'network.peerCount'])));
-  set('syncStatus', d.is_syncing ? 'Syncing' : 'Synced');
-  set('networkName', 'Mainnet');
-  set('lastBlock', fmt(pick(d, ['last_block_time', 'lastBlockTime'])));
-  set('latency', (() => {
-    const value = pick(d, ['latency', 'network.latency', 'peerLatency']);
-    if (value === undefined) return '—';
-    return `${fmt(value)}${typeof value === 'number' ? ' ms' : ''}`;
-  })());
-
-  const wallet = pick(d, ['wallet']);
-  if (wallet) {
-      set('balance', acm(wallet.balance));
-      set('bond', acm(wallet.bond));
-      set('loyalty', fmt(wallet.loyalty));
-      set('utxo', fmt(wallet.utxo_count));
-      set('walletAddress', fmt(wallet.address, 'Not provided by API'));
-  }
-
-  const blocks = pick(d, ['blocks_mined', 'blocksMined', 'blocks_found']);
-  set('blocksMined', fmt(blocks));
-  const blocksNum = asNumber(blocks);
-  if (blocksNum !== null) {
-    state.historyBlocks.push(blocksNum);
-    if (state.historyBlocks.length > 24) state.historyBlocks.shift();
-    drawBars('blocksChart', state.historyBlocks);
-    set('blocksNote', 'Session history · API block metric');
-  } else {
-    drawBars('blocksChart', []);
-    set('blocksNote', 'Block history is not exposed by /api/info');
-  }
-}
-
-function drawLine(id, values) {
-  const canvas = $(id); if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const w = canvas.clientWidth || 320, h = canvas.clientHeight || 155, dpr = window.devicePixelRatio || 1;
-  canvas.width = w * dpr; canvas.height = h * dpr;
-  ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
-  ctx.strokeStyle = '#203044'; ctx.lineWidth = 1;
-  for (let i = 1; i < 4; i++) { ctx.beginPath(); ctx.moveTo(0, h * i / 4); ctx.lineTo(w, h * i / 4); ctx.stroke(); }
-  if (values.length < 2) { ctx.fillStyle = '#71839a'; ctx.font = '12px system-ui'; ctx.fillText('No hashrate history available', 10, h / 2); return; }
-  const min = Math.min(...values), max = Math.max(...values), range = max - min || 1;
-  ctx.beginPath();
-  values.forEach((value, index) => {
-    const x = index * w / (values.length - 1);
-    const y = h - 12 - (value - min) / range * (h - 24);
-    if (index) ctx.lineTo(x, y); else ctx.moveTo(x, y);
-  });
-  ctx.strokeStyle = '#20dc72'; ctx.lineWidth = 2; ctx.stroke();
-  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath(); ctx.fillStyle = 'rgba(32,220,114,.08)'; ctx.fill();
-}
-
-function drawBars(id, values) {
-  const canvas = $(id); if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const w = canvas.clientWidth || 320, h = canvas.clientHeight || 155, dpr = window.devicePixelRatio || 1;
-  canvas.width = w * dpr; canvas.height = h * dpr;
-  ctx.scale(dpr, dpr); ctx.clearRect(0, 0, w, h);
-  ctx.strokeStyle = '#203044';
-  for (let i = 1; i < 4; i++) { ctx.beginPath(); ctx.moveTo(0, h * i / 4); ctx.lineTo(w, h * i / 4); ctx.stroke(); }
-  if (!values.length) { ctx.fillStyle = '#71839a'; ctx.font = '12px system-ui'; ctx.fillText('No block history available', 10, h / 2); return; }
-  const max = Math.max(...values, 1), step = w / values.length;
-  values.forEach((value, index) => {
-    const barHeight = (h - 12) * value / max;
-    ctx.fillStyle = '#168cff';
-    ctx.fillRect(index * step + 2, h - barHeight, Math.max(2, step - 4), barHeight);
-  });
-}
+async function fetchData(url) { const r = await fetch(url); if(!r.ok) throw new Error(); return r.json(); }
 
 async function refresh() {
-  if (state.busy) return;
-  state.busy = true; $('refreshBtn').disabled = true;
   try {
-    const [info, logs] = await Promise.allSettled([ getJSON('/api/info'), getJSON('/api/logs') ]);
-    if (info.status === 'fulfilled') { clearError(); applyInfo(info.value); }
-    else {
-      showError(`Could not load /api/info: ${info.reason?.message || info.reason}`);
-      set('topStatus', 'Offline'); set('sideStatus', 'Offline'); $('statusDot').style.background = 'var(--red)';
-    }
-    if (logs.status === 'fulfilled') { applyLogs(logs.value); }
-  } catch (error) { showError(error.message || String(error)); }
-  finally { state.busy = false; $('refreshBtn').disabled = false; }
-}
+    const info = await fetchData('/info');
+    statusDot.style.background = 'var(--green)';
+    topStatus.textContent = 'Online';
+    heightTop.textContent = 'Height ' + info.height;
+    height.textContent = info.height;
+    hashrate.textContent = (info.hash_rate || 0) + ' H/s';
+    difficulty.textContent = info.difficulty?.toFixed(4) || '—';
+    peers.textContent = info.peers || 0;
+    sync.textContent = info.sync_progress >= 0.99 ? 'Synced' : 'Syncing';
+    mempool.textContent = info.mempool_size || 0;
 
-function normalizeLogs(raw) {
-  const data = unwrap(raw);
-  if (Array.isArray(data)) return data;
-  if (data && Array.isArray(data.logs)) return data.logs;
-  if (data && Array.isArray(data.entries)) return data.entries;
-  if (data && Array.isArray(data.messages)) return data.messages;
-  if (typeof data === 'string') return data.split(/\r?\n/).filter(Boolean);
-  return [];
-}
+    const atk = await fetchData('/attacks');
+    atk-tag.textContent = atk.attack_detected ? 'ATTACK' : 'CLEAN';
+    atk-tag.className = 'tag ' + (atk.attack_detected ? 'red' : '');
+    atk-detected.textContent = atk.attack_detected ? 'YES' : 'no';
+    atk-detected.style.color = atk.attack_detected ? 'var(--red)' : 'var(--green)';
+    atk-sybil.textContent = ((atk.sybil_score || 0) * 100).toFixed(1) + '%';
+    atk-peers.textContent = atk.peers + ' / ' + atk.known_peers;
 
-function applyLogs(raw) {
-  const entries = normalizeLogs(raw);
-  if (!entries.length) return;
-  const signature = JSON.stringify(entries.slice(-5));
-  if (signature === state.lastLogSignature) return;
-  state.lastLogSignature = signature;
-  if (state.logsPaused) return;
-  state.logs = entries.slice(-500);
-  renderLogs();
-}
-
-function renderLogs() {
-  const output = $('logOutput');
-  output.innerHTML = '';
-  if (!state.logs.length) { output.innerHTML = '<div class="empty">No log entries returned by API.</div>'; return; }
-  for (const item of state.logs) {
-    const line = document.createElement('div');
-    line.className = 'log-line';
-    let time = '', level = 'INFO', message = '';
-    if (typeof item === 'string') {
-      const match = item.match(/^(\[[^\]]+\]|\S+\s+\S+)?\s*(INFO|WARN|WARNING|ERROR|DEBUG)?\s*(.*)$/i);
-      if (match) { time = match[1] || ''; level = (match[2] || 'INFO').toUpperCase(); message = match[3] || item; }
-      else { message = item; }
-    } else {
-      time = pick(item, ['time', 'timestamp', 'date']) || '';
-      level = String(pick(item, ['level', 'severity', 'type']) || 'INFO').toUpperCase();
-      message = pick(item, ['message', 'msg', 'text']) || JSON.stringify(item);
-    }
-    const timeEl = document.createElement('span'); timeEl.className = 'log-time'; timeEl.textContent = time + ' ';
-    const levelEl = document.createElement('span');
-    levelEl.className = 'log-level' + (level.includes('WARN') ? ' warn' : level.includes('ERR') ? ' error' : '');
-    levelEl.textContent = level;
-    const messageEl = document.createElement('span'); messageEl.textContent = ' ' + message;
-    line.append(timeEl, levelEl, messageEl);
-    output.appendChild(line);
-  }
-  output.scrollTop = output.scrollHeight;
-}
-
-async function command(path, label) {
-  const button = path.endsWith('/start') ? $('startBtn') : (path.endsWith('/pause') ? $('pauseBtn') : $('stopBtn'));
-  button.disabled = true;
-  try {
-    await postJSON(path);
-    showError(`${label} command sent successfully.`);
-    $('errorBanner').style.borderColor = '#126b3d'; $('errorBanner').style.background = '#08291d'; $('errorBanner').style.color = '#a6f7c6';
-    await refresh();
-  } catch (error) {
-    showError(`${label} failed: ${error.message || error}`);
-  } finally {
-    button.disabled = false;
-    setTimeout(() => { $('errorBanner').style.borderColor = ''; $('errorBanner').style.background = ''; $('errorBanner').style.color = ''; }, 3000);
-  }
-}
-
-function setTimer() {
-  if (state.timer) clearInterval(state.timer);
-  const rate = Number($('refreshRate').value);
-  if (rate > 0) state.timer = setInterval(refresh, rate * 1000);
-}
-
-$('refreshBtn').addEventListener('click', refresh);
-$('refreshRate').addEventListener('change', setTimer);
-$('startBtn').addEventListener('click', () => { command('/api/mining/start', 'Start mining'); });
-$('pauseBtn').addEventListener('click', () => { command('/api/mining/pause', 'Pause mining'); });
-$('stopBtn').addEventListener('click', () => { command('/api/mining/stop', 'Stop mining'); });
-$('pauseLogsBtn').addEventListener('click', () => {
-  state.logsPaused = !state.logsPaused;
-  $('pauseLogsBtn').textContent = state.logsPaused ? '▶ Resume view' : 'Ⅱ Pause view';
-  if (!state.logsPaused) renderLogs();
-});
-$('clearLogsBtn').addEventListener('click', () => {
-  state.logs = []; state.logSignature = ''; renderLogs();
-});
-$('downloadLogsBtn').addEventListener('click', () => {
-  const text = state.logs.map(item => typeof item === 'string' ? item : JSON.stringify(item)).join('\n');
-  const blob = new Blob([text], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a'); link.href = url; link.download = 'accum-node-logs.txt'; link.click();
-  URL.revokeObjectURL(url);
-});
-window.addEventListener('resize', () => { drawLine('hashChart', state.historyHash); drawBars('blocksChart', state.historyBlocks); });
-refresh(); setTimer();
-})();
-</script>
-<script>
-(() => {
-  const $ = id => document.getElementById(id);
-  const hist = [];
-  const canvas = $('attackChart');
-
-  function draw() {
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const w = canvas.clientWidth || 320, h = 100, dpr = window.devicePixelRatio || 1;
-    canvas.width = w*dpr; canvas.height = h*dpr;
-    ctx.scale(dpr, dpr); ctx.clearRect(0,0,w,h);
-    ctx.strokeStyle = '#203044';
-    for (let i=1;i<4;i++){ctx.beginPath();ctx.moveTo(0,h*i/4);ctx.lineTo(w,h*i/4);ctx.stroke();}
-    if (hist.length < 2) {
-      ctx.fillStyle = '#71839a'; ctx.font = '12px system-ui';
-      ctx.fillText('Collecting...', 10, h/2); return;
-    }
-    ctx.beginPath();
-    hist.forEach((v,i)=>{
-      const x = i*w/(hist.length-1);
-      const y = h-4 - v*(h-8);
-      if (i) ctx.lineTo(x,y); else ctx.moveTo(x,y);
-    });
-    const last = hist[hist.length - 1];
-    ctx.strokeStyle = last>0.7?'#ff4d5c':last>0.4?'#f5bd26':'#20dc72';
-    ctx.lineWidth = 2; ctx.stroke();
-  }
-
-  async function refresh() {
-    try {
-      const a = await fetch('/api/attacks').then(r=>r.json());
-      const score = a.sybil_score ?? 0;
-      hist.push(score);
-      if (hist.length > 60) hist.shift();
-      draw();
-
-      const flag = $('atk-flag');
-      if (flag) {
-        if (a.attack_detected) {
-          flag.textContent = 'ATTACK';
-          flag.style.background = '#431c27';
-          flag.style.borderColor = '#7e2837';
-          flag.style.color = '#ff7783';
-        } else {
-          flag.textContent = 'CLEAN';
-          flag.style.background = '#08291d';
-          flag.style.borderColor = '#126c42';
-          flag.style.color = '#20dc72';
-        }
+    const logsData = await fetchData('/logs');
+    const container = logOutput;
+    const logs = logsData.logs || [];
+    if (logs.length > 0) {
+      const lastLog = logs[logs.length - 1];
+      if (container.dataset.last !== lastLog) {
+        container.dataset.last = lastLog;
+        container.innerHTML = logs.slice(-50).map(line => {
+          let color = '#a0b0c4';
+          if (line.includes('BLOCK')) color = '#20dc72';
+          if (line.includes('SHARE-SEND')) color = '#168cff';
+          if (line.includes('SHARE-RECV')) color = '#f5bd26';
+          if (line.includes('Invalid')) color = '#ff4d5c';
+          return <div class="log-line" style="color:"></div>;
+        }).join('');
+        container.scrollTop = container.scrollHeight;
       }
-
-      const det = $('atk-detected');
-      if (det) { det.textContent = a.attack_detected ? 'yes' : 'no'; det.style.color = a.attack_detected ? 'var(--red)' : 'var(--green)'; }
-
-      if ($('atk-type')) $('atk-type').textContent = a.attack_type || '—';
-
-      const sy = $('atk-sybil');
-      if (sy) { sy.textContent = Math.round(score*100)+'%'; sy.style.color = score>0.7?'var(--red)':score>0.4?'var(--yellow)':'var(--green)'; }
-
-      const inv = (a.avg_invalid_ratio ?? 0) * 100;
-      const invEl = $('atk-invalid');
-      if (invEl) { invEl.textContent = inv.toFixed(2)+'%'; invEl.style.color = inv>10?'var(--red)':inv>2?'var(--yellow)':'var(--green)'; }
-
-      if ($('atk-ips')) $('atk-ips').textContent    = a.banned_ips ?? '—';
-      if ($('atk-miners')) $('atk-miners').textContent = a.banned_miners ?? '—';
-      if ($('atk-peers')) $('atk-peers').textContent  = (a.peers ?? '—') + ' / ' + (a.known_peers ?? '—');
-      if ($('atk-rate')) $('atk-rate').textContent   = (a.global_rate_per_sec ?? 0).toFixed(2);
-    } catch (e) { console.error('attacks:', e); }
-  }
-
-  window.addEventListener('resize', draw);
-  setInterval(refresh, 3000);
-  refresh();
-})();
+    }
+  } catch(e) { console.error(e); }
+}
+refresh();
+setInterval(refresh, 3000);
 </script>
 </body>
 </html>
