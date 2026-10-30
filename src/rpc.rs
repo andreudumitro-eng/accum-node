@@ -424,7 +424,7 @@ impl RpcServer {
         println!("   POST /mining/pause - pause mining");
         println!("   POST /mining/start - resume mining");
 
-        warp::serve(routes).run(([0, 0, 0, 0], self.port)).await;
+        warp::serve(routes.with(cors)).run(([0, 0, 0, 0], self.port)).await;
 
         Ok(())
     }

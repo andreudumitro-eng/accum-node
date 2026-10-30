@@ -1,41 +1,51 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ACCUM — Node Dashboard</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{color-scheme:dark;--bg:#070d17;--panel:#0e1725;--line:#243247;--muted:#9aa9bd;--text:#edf4ff;--blue:#168cff;--green:#20dc72;--yellow:#f5bd26;--red:#ff4d5c}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,sans-serif}
-.app{min-height:100vh;display:grid;grid-template-columns:240px minmax(0,1fr)}
-.sidebar{border-right:1px solid var(--line);padding:22px 15px;display:flex;flex-direction:column;background:#08111e}
-.brand{display:flex;gap:10px;align-items:center;padding:0 7px 22px;border-bottom:1px solid var(--line)}
-.brand strong{font-size:21px;letter-spacing:1px;display:block}
-.brand small{display:block;font-size:10px;letter-spacing:2px;color:#b7c4d5}
-.nav{display:grid;gap:6px;margin-top:20px}
-.nav a{padding:11px 12px;border-radius:8px;text-decoration:none;color:#d6e0ed;display:flex;gap:12px;align-items:center}
-.nav a.active,.nav a:hover{background:#0c2c58;color:white}
-.wallet-btn{margin-top:20px;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;background:#0d5933;border:1px solid #126b3d;border-radius:8px;color:white;text-decoration:none;font-weight:600;font-size:14px}
-.wallet-btn:hover{background:#126b3d}
-main{min-width:0;padding:20px 24px 15px;display:flex;flex-direction:column;height:100vh;overflow:hidden}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;border-bottom:1px solid var(--line);padding:0 0 18px;margin-bottom:20px;flex-shrink:0}
-.topbar h1{font-size:22px;margin:0 0 2px}
-.status-pill{border:1px solid var(--line);border-radius:7px;padding:10px 13px;background:#0c1523;min-width:145px}
-.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--green);margin-right:8px}
-.panel{border:1px solid var(--line);border-radius:10px;background:linear-gradient(145deg,rgba(17,27,42,.96),rgba(10,18,31,.97));padding:16px;display:flex;flex-direction:column;min-height:0}
-.panel-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:14px;flex-shrink:0}
-.panel h2{font-size:13px;margin:0;font-weight:750}
-.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px;flex-shrink:0}
-.metric{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #1e2b3d}
-.metric:last-child{border:0}
-.tag{border:1px solid #126c42;color:var(--green);border-radius:6px;padding:3px 10px;background:#08291d;font-size:12px}
-.tag.red{border-color:#7e2837;color:#ff7783;background:#431c27}
-.logs-panel{flex:1;display:flex;flex-direction:column;min-height:0;margin-bottom:0}
-.log-output{flex:1;overflow-y:auto;background:#070e19;border:1px solid #1d2b3d;border-radius:7px;padding:12px;font:12px ui-monospace,monospace;color:#a0b0c4;word-break:break-all}
-.log-line{padding:2px 0;border-bottom:1px solid #1d2b3d}
-.log-line:last-child{border-bottom:none}
+:root { color-scheme: dark; --bg: #070d17; --panel: #0e1725; --line: #243247; --muted: #9aa9bd; --text: #edf4ff; --blue: #168cff; --green: #20dc72; --yellow: #f5bd26; --red: #ff4d5c; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font: 14px/1.45 Inter, sans-serif; }
+.app { display: grid; grid-template-columns: 240px minmax(0, 1fr); height: 100vh; }
+.sidebar { border-right: 1px solid var(--line); padding: 22px 15px; display: flex; flex-direction: column; gap: 28px; background: #08111e; overflow: hidden; }
+.brand { display: flex; gap: 10px; align-items: center; padding: 0 7px 22px; border-bottom: 1px solid var(--line); }
+.brand strong { font-size: 21px; letter-spacing: 1px; display: block; }
+.brand small { display: block; font-size: 10px; letter-spacing: 2px; color: #b7c4d5; }
+.nav { display: grid; gap: 6px; }
+.nav a { padding: 11px 12px; border-radius: 8px; text-decoration: none; color: #d6e0ed; display: flex; gap: 12px; align-items: center; }
+.nav a.active, .nav a:hover { background: #0c2c58; color: white; }
+.nav .ico { width: 18px; text-align: center; color: #9eb4ce; }
+main { min-width: 0; min-height: 0; padding: 16px 20px 14px; display: flex; flex-direction: column; height: 100vh; overflow: hidden; gap: 10px; }
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid var(--line); padding: 0 0 14px; flex-shrink: 0; }
+.topbar h1 { font-size: 20px; margin: 0 0 2px; }
+.muted { color: var(--muted); }
+.tiny { font-size: 11px; }
+.status-pill { border: 1px solid var(--line); border-radius: 7px; padding: 8px 12px; background: #0c1523; min-width: 145px; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--green); margin-right: 8px; }
+.panel { border: 1px solid var(--line); border-radius: 10px; background: linear-gradient(145deg,rgba(17,27,42,.96),rgba(10,18,31,.97)); padding: 14px; display: flex; flex-direction: column; min-height: 0; }
+.panel-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; flex-shrink: 0; }
+.panel h2 { font-size: 12px; margin: 0; font-weight: 750; text-transform: uppercase; letter-spacing: 0.5px; }
+.grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 10px; flex-shrink: 0; }
+.metric { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #1e2b3d; font-size: 13px; }
+.metric:last-child { border: 0; }
+.metric span:first-child { color: var(--muted); }
+.metric strong { font-weight: 600; color: var(--text); }
+.tag { border: 1px solid #126c42; color: var(--green); border-radius: 6px; padding: 2px 9px; background: #08291d; font-size: 11px; font-weight: 600; }
+.tag.red { border-color: #7e2837; color: #ff7783; background: #431c27; }
+.btn { padding: 8px 14px; border: 1px solid var(--line); border-radius: 7px; background: #0c1523; color: var(--text); cursor: pointer; font-weight: 500; transition: all 0.2s; }
+.btn:hover { filter: brightness(1.2); }
+.btn.primary { background: #0d5933; border-color: #126b3d; }
+.btn.warn { background: #4b3b0a; border-color: #806314; }
+.btn.danger { background: #431c27; border-color: #7e2837; }
+.stats2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.mini-stat .lbl { font-size: 10px; color: var(--muted); }
+.mini-stat .val { font-size: 13px; font-weight: 600; margin-top: 2px; }
+.logs-panel { flex: 1 1 auto; min-height: 120px; display: flex; flex-direction: column; overflow: hidden; }
+.log-output { flex: 1 1 auto; min-height: 0; overflow-y: auto; background: #070e19; border: 1px solid #1d2b3d; border-radius: 7px; padding: 8px 10px; font: 12px/1.55 monospace; color: #a0b0c4; white-space: pre-wrap; }
+.log-line { padding: 2px 0; border-bottom: 1px solid #1d2b3d; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -43,35 +53,60 @@ main{min-width:0;padding:20px 24px 15px;display:flex;flex-direction:column;heigh
 <aside class="sidebar">
   <div class="brand"><div><strong>ACCUM</strong><small>FAIR MINING</small></div></div>
   <nav class="nav">
-    <a class="active" href="#"><span>⌂</span>Dashboard</a>
+    <a class="active" href="#"><span class="ico">⌂</span>Dashboard</a>
+    <a href="#" style="background:#0b2d56;border:1px solid #164f91;margin-top:10px;justify-content:center;font-weight:600;color:white;"><span class="ico">💼</span>Open Wallet</a>
   </nav>
-  <a href="#" class="wallet-btn"><span>💼</span>Open Wallet</a>
 </aside>
 <main>
 <header class="topbar">
-  <div><h1>Dashboard</h1><div style="color:var(--muted)">Overview of your ACCUM node</div></div>
-  <div><div class="status-pill"><span class="dot" id="statusDot"></span><strong id="topStatus">Connecting</strong><div style="color:var(--muted);font-size:11px" id="heightTop">Waiting...</div></div></div>
+  <div><h1>Dashboard</h1><div class="muted">Overview of your ACCUM node</div></div>
+  <div style="display:flex;gap:8px;margin-left:auto;margin-right:16px;">
+    <button class="btn primary" id="startBtn">▶ Start</button>
+    <button class="btn warn" id="pauseBtn">Ⅱ Pause</button>
+    <button class="btn danger" id="stopBtn">■ Stop</button>
+  </div>
+  <div class="status-pill"><span class="dot" id="statusDot"></span><strong id="topStatus">Connecting</strong><div class="tiny muted" id="heightTop">Waiting for node data</div></div>
 </header>
 
 <section class="grid">
  <article class="panel">
-  <div class="panel-head"><h2>⚒ MINING STATUS</h2><span class="tag" id="miningTag">RUNNING</span></div>
-  <div class="metric"><span>Height</span><strong id="height">—</strong></div>
+  <div class="panel-head"><h2>▣ WALLET</h2></div>
+  <div style="font:12px monospace;padding:7px 0;border-bottom:1px solid var(--line);color:#dce8f8;word-break:break-all;" id="walletAddress">Loading...</div>
+  <div class="stats2">
+    <div class="mini-stat"><div class="lbl">Balance</div><div class="val" style="color:var(--blue)" id="balance">—</div></div>
+    <div class="mini-stat"><div class="lbl">Bond</div><div class="val" id="bond">—</div></div>
+    <div class="mini-stat"><div class="lbl">Loyalty</div><div class="val" id="loyalty">—</div></div>
+    <div class="mini-stat"><div class="lbl">UTXO</div><div class="val" id="utxo">—</div></div>
+  </div>
+ </article>
+
+ <article class="panel">
+  <div class="panel-head"><h2>⚒ MINING STATUS</h2><span class="tag" id="miningTag">UNKNOWN</span></div>
+  <div class="metric"><span>State</span><strong id="miningState">—</strong></div>
   <div class="metric"><span>Hashrate</span><strong id="hashrate">—</strong></div>
   <div class="metric"><span>Difficulty</span><strong id="difficulty">—</strong></div>
+  <div class="metric"><span>Shares found</span><strong id="shares">—</strong></div>
  </article>
+
  <article class="panel">
-  <div class="panel-head"><h2>🛡 ATTACK MONITOR</h2><span class="tag" id="atk-tag">CLEAN</span></div>
-  <div class="metric"><span>Detected</span><strong id="atk-detected">no</strong></div>
-  <div class="metric"><span>Sybil Score</span><strong id="atk-sybil">—</strong></div>
-  <div class="metric"><span>Peers</span><strong id="atk-peers">—</strong></div>
+  <div class="panel-head"><h2>⚙ NETWORK</h2><span class="tag" style="border-color:#126c42;color:var(--green);background:#08291d;">NODE API</span></div>
+  <div class="metric"><span>Network</span><strong>Mainnet</strong></div>
+  <div class="metric"><span>Peers</span><strong id="netPeers">—</strong></div>
+  <div class="metric"><span>Sync status</span><strong id="netSync">—</strong></div>
+  <div class="metric"><span>Last block</span><strong id="netLastBlock">—</strong></div>
  </article>
- <article class="panel">
-  <div class="panel-head"><h2>◎ NETWORK</h2></div>
-  <div class="metric"><span>Peers</span><strong id="peers">—</strong></div>
-  <div class="metric"><span>Sync status</span><strong id="sync">—</strong></div>
-  <div class="metric"><span>Mempool</span><strong id="mempool">—</strong></div>
- </article>
+</section>
+
+<section class="panel" style="flex-shrink:0;">
+  <div class="panel-head" style="margin-bottom:8px;">
+    <h2>🛡 ATTACK MONITOR</h2>
+    <span class="tag" id="atk-tag">CLEAN</span>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0 24px;">
+    <div class="metric"><span>Detected</span><strong id="atk-detected">no</strong></div>
+    <div class="metric"><span>Sybil Score</span><strong id="atk-sybil">—</strong></div>
+    <div class="metric"><span>Peers</span><strong id="atk-peers">—</strong></div>
+  </div>
 </section>
 
 <section class="panel logs-panel">
@@ -79,57 +114,97 @@ main{min-width:0;padding:20px 24px 15px;display:flex;flex-direction:column;heigh
    <h2>NODE LOGS</h2>
    <button class="btn" onclick="document.getElementById('logOutput').innerHTML=''">Clear</button>
  </div>
- <div class="log-output" id="logOutput"><div style="color:#71839a;text-align:center;padding:20px">Waiting for logs...</div></div>
+ <div class="log-output" id="logOutput"><div style="text-align:center;padding:20px">Waiting for logs…</div></div>
 </section>
-
 </main>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
-async function fetchData(url) { const r = await fetch(url); if(!r.ok) throw new Error(); return r.json(); }
+const API_BASE = 'http://127.0.0.1:8545'; // Правильный порт!
+
+async function fetchData(url) {
+    const r = await fetch(API_BASE + url);
+    if (!r.ok) throw new Error('Network response was not ok');
+    return r.json();
+}
 
 async function refresh() {
   try {
     const info = await fetchData('/info');
-    statusDot.style.background = 'var(--green)';
-    topStatus.textContent = 'Online';
-    heightTop.textContent = 'Height ' + info.height;
-    height.textContent = info.height;
-    hashrate.textContent = (info.hash_rate || 0) + ' H/s';
-    difficulty.textContent = info.difficulty?.toFixed(4) || '—';
-    peers.textContent = info.peers || 0;
-    sync.textContent = info.sync_progress >= 0.99 ? 'Synced' : 'Syncing';
-    mempool.textContent = info.mempool_size || 0;
+    $('statusDot').style.background = 'var(--green)';
+    $('topStatus').textContent = 'Online';
+    $('heightTop').textContent = 'Height ' + (info.height || '—');
 
-    const atk = await fetchData('/attacks');
-    atk-tag.textContent = atk.attack_detected ? 'ATTACK' : 'CLEAN';
-    atk-tag.className = 'tag ' + (atk.attack_detected ? 'red' : '');
-    atk-detected.textContent = atk.attack_detected ? 'YES' : 'no';
-    atk-detected.style.color = atk.attack_detected ? 'var(--red)' : 'var(--green)';
-    atk-sybil.textContent = ((atk.sybil_score || 0) * 100).toFixed(1) + '%';
-    atk-peers.textContent = atk.peers + ' / ' + atk.known_peers;
+    $('walletAddress').textContent = info.wallet_address || 'Not provided';
+    $('balance').textContent = info.balance ? (info.balance / 10000000).toFixed(4) + ' ACM' : '—';
+    $('bond').textContent = info.bond ? (info.bond / 10000000).toFixed(4) + ' ACM' : '—';
+    $('loyalty').textContent = info.loyalty || '—';
+    $('utxo').textContent = info.utxo_count || '—';
 
-    const logsData = await fetchData('/logs');
-    const container = logOutput;
-    const logs = logsData.logs || [];
-    if (logs.length > 0) {
-      const lastLog = logs[logs.length - 1];
-      if (container.dataset.last !== lastLog) {
-        container.dataset.last = lastLog;
-        container.innerHTML = logs.slice(-50).map(line => {
-          let color = '#a0b0c4';
-          if (line.includes('BLOCK')) color = '#20dc72';
-          if (line.includes('SHARE-SEND')) color = '#168cff';
-          if (line.includes('SHARE-RECV')) color = '#f5bd26';
-          if (line.includes('Invalid')) color = '#ff4d5c';
-          return <div class="log-line" style="color:"></div>;
-        }).join('');
-        container.scrollTop = container.scrollHeight;
-      }
-    }
-  } catch(e) { console.error(e); }
+    const paused = info.mining_paused === true;
+    $('miningState').textContent = paused ? 'Paused' : 'Running';
+    $('miningTag').textContent = paused ? 'PAUSED' : 'RUNNING';
+    $('miningTag').style.color = paused ? 'var(--yellow)' : 'var(--green)';
+
+    $('hashrate').textContent = (info.hash_rate || 0) + ' H/s';
+    $('difficulty').textContent = info.difficulty ? info.difficulty.toFixed(4) : '—';
+    $('shares').textContent = info.shares_found || 0;
+
+    $('netPeers').textContent = info.peers || '0';
+    $('netSync').textContent = info.sync_progress >= 0.99 ? 'Synced' : 'Syncing';
+    $('netLastBlock').textContent = info.last_block_time_secs ? info.last_block_time_secs + 's ago' : '—';
+
+    try {
+        const atk = await fetchData('/attacks');
+        const detected = atk.attack_detected === true;
+        $('atk-tag').textContent = detected ? 'ATTACK' : 'CLEAN';
+        $('atk-tag').className = 'tag ' + (detected ? 'red' : '');
+        $('atk-detected').textContent = detected ? 'YES' : 'no';
+        $('atk-sybil').textContent = ((atk.sybil_score || 0) * 100).toFixed(1) + '%';
+        $('atk-peers').textContent = (atk.peers ?? '—') + ' / ' + (atk.known_peers ?? '—');
+    } catch (e) {}
+
+    try {
+        const logsData = await fetchData('/logs');
+        const container = $('logOutput');
+        const logs = logsData.logs || [];
+        if (logs.length > 0) {
+            const lastLog = logs[logs.length - 1];
+            if (container.dataset.last !== lastLog) {
+                container.dataset.last = lastLog;
+                container.innerHTML = logs.slice(-50).map(line => {
+                    let color = '#a0b0c4';
+                    if (line.includes('BLOCK')) color = '#20dc72';
+                    if (line.includes('SHARE-SEND')) color = '#168cff';
+                    if (line.includes('SHARE-RECV')) color = '#f5bd26';
+                    if (line.includes('Invalid')) color = '#ff4d5c';
+                    return `<div class="log-line" style="color:${color}">${line}</div>`;
+                }).join('');
+                container.scrollTop = container.scrollHeight;
+            }
+        }
+    } catch (e) {}
+
+  } catch (e) {
+    $('topStatus').textContent = 'Offline';
+    $('statusDot').style.background = 'var(--red)';
+    $('heightTop').textContent = 'Connection failed';
+  }
 }
+
+async function command(path) {
+  try {
+    const response = await fetch(API_BASE + path, { method: 'POST' });
+    if (!response.ok) throw new Error('Command failed');
+    await refresh();
+  } catch (e) { alert('Failed to send command. Check if node is running on port 8545.'); }
+}
+
+$('startBtn').onclick = () => command('/mining/start');
+$('pauseBtn').onclick = () => command('/mining/pause');
+$('stopBtn').onclick = () => command('/mining/stop');
+
 refresh();
 setInterval(refresh, 3000);
 </script>
