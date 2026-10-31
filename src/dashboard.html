@@ -166,12 +166,11 @@ async function refresh() {
     } catch (e) {}
 
     try {
-        // ПРАВИЛЬНЫЙ ЗАПРОС: /api/logs (как в Rust-сервере)
         const logsData = await fetchData('/api/logs');
-        
-        // Сервер возвращает массив, а не объект {logs: []}
-        const logs = Array.isArray(logsData) ? logsData : (logsData.logs || []);
         const container = $('logOutput');
+        
+        // Сервер возвращает массив строк
+        const logs = Array.isArray(logsData) ? logsData : [];
         
         if (logs.length > 0) {
             const lastLog = logs[logs.length - 1];
