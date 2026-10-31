@@ -72,7 +72,6 @@ async fn api_info(State(node): State<SharedNode>) -> impl IntoResponse {
         .unwrap_or(0);
 
         let sync_progress = n.p2p.as_ref().map(|p| p.sync_progress()).unwrap_or(1.0);
-    let is_syncing = n.p2p.as_ref().map(|p| p.is_syncing()).unwrap_or(false);
 
     Json(json!({
                 "height": n.height,
@@ -91,7 +90,6 @@ async fn api_info(State(node): State<SharedNode>) -> impl IntoResponse {
         "shares_found": n.share_pool.total_shares_count(),
         "mining_paused": n.mining_paused.load(std::sync::atomic::Ordering::Relaxed),
                 "sync_progress": sync_progress,
-        "is_syncing": is_syncing,
         "wallet": {
             "address": wallet_address,
             "miner_id": wallet_miner_id,
