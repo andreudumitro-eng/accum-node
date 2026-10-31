@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -166,9 +166,13 @@ async function refresh() {
     } catch (e) {}
 
     try {
-        const logsData = await fetchData('/logs');
+        // ПРАВИЛЬНЫЙ ЗАПРОС: /api/logs (как в Rust-сервере)
+        const logsData = await fetchData('/api/logs');
+        
+        // Сервер возвращает массив, а не объект {logs: []}
+        const logs = Array.isArray(logsData) ? logsData : (logsData.logs || []);
         const container = $('logOutput');
-        const logs = logsData.logs || [];
+        
         if (logs.length > 0) {
             const lastLog = logs[logs.length - 1];
             if (container.dataset.last !== lastLog) {
@@ -183,8 +187,12 @@ async function refresh() {
                 }).join('');
                 container.scrollTop = container.scrollHeight;
             }
+        } else {
+            container.innerHTML = '<div style="text-align:center;padding:20px;color:#9aa9bd;">Waiting for logs...</div>';
         }
-    } catch (e) {}
+    } catch (e) {
+        console.error('Logs error:', e);
+    }
 
   } catch (e) {
     $('topStatus').textContent = 'Offline';

@@ -11,6 +11,7 @@ keywords = ["blockchain", "consensus", "pow", "argon2id", "cryptocurrency"]
 categories = ["cryptography", "network-programming"]
 
 [dependencies]
+open = "5"
 socket2 = "0.5"
 # Криптография
 sha2 = "0.10"
