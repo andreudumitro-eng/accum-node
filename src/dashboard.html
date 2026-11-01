@@ -140,11 +140,11 @@ async function refresh() {
     $('statusDot').style.background = 'var(--green)';
     $('topStatus').textContent = 'Online';
     $('heightTop').textContent = `Height ${d.height ?? '—'}`;
-    $('walletAddress').textContent = 'Not provided';
-    $('balance').textContent = '—';
+    $('walletAddress').textContent = d.address || 'Not provided';
+    $('balance').textContent = d.balance ? (d.balance / 1e7).toFixed(4) + ' ACM' : '—';
     $('bond').textContent = ((d.bond ?? 0) / 1e7).toFixed(4) + ' ACM';
-    $('loyalty').textContent = '—';
-    $('utxo').textContent = '—';
+    $('loyalty').textContent = d.loyalty ?? '—';
+    $('utxo').textContent = d.utxo_count ?? '—';
     $('miningState').textContent = 'Running';
     $('miningTag').textContent = 'RUNNING';
     $('miningTag').className = 'tag';
@@ -188,3 +188,4 @@ $('clearLogsBtn').onclick = () => {
 </script>
 </body>
 </html>
+
