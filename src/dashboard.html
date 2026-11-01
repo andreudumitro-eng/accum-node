@@ -69,7 +69,7 @@ main { min-width: 0; min-height: 0; padding: 16px 20px 14px; display: flex; flex
     <button class="btn warn" id="pauseBtn">Ⅱ Pause</button>
     <button class="btn danger" id="stopBtn">■ Stop</button>
     <div class="status-pill">
-      <div><span class="dot" id="statusDot"></span><strong id="topStatus">Connecting</strong></div>
+      <div><img id="coinLogo" src="logo.svg" alt="ACM" width="32" height="32" style="height:32px;width:32px;object-fit:contain;vertical-align:middle;margin-right:8px" onerror="this.style.display='none'"><span class="dot" id="statusDot"></span><strong id="topStatus">Connecting</strong></div>
       <div class="tiny muted" id="heightTop">Waiting for data</div>
     </div>
   </div>
@@ -134,12 +134,31 @@ function showError(msg) {
   b.textContent = msg;
   b.style.display = msg ? 'block' : 'none';
 }
+async function fetchLogs() {
+  try {
+    const res = await fetch(API_BASE + '/logs');
+    if (!res.ok) return;
+    const logs = await res.json();
+    if (!Array.isArray(logs)) return;
+    const out = document.getElementById('logOutput');
+    if (!out) return;
+    out.innerHTML = '';
+    for (const l of logs.slice(-100)) {
+      const d = document.createElement('div');
+      d.className = 'log-line';
+      d.textContent = l;
+      out.appendChild(d);
+    }
+    out.scrollTop = out.scrollHeight;
+  } catch(e) {}
+}
+
 async function refresh() {
   try {
     const d = await api('/info');
     $('statusDot').style.background = 'var(--green)';
     $('topStatus').textContent = 'Online';
-    $('heightTop').textContent = `Height ${d.height ?? '—'}`;
+    $('heightTop').textContent = `Height ${d.height ?? '—'} · Epoch ${d.epoch ?? '—'}`;
     $('walletAddress').textContent = d.address || 'Not provided';
     $('balance').textContent = d.balance ? (d.balance / 1e7).toFixed(4) + ' ACM' : '—';
     $('bond').textContent = ((d.bond ?? 0) / 1e7).toFixed(4) + ' ACM';
@@ -184,8 +203,13 @@ $('clearLogsBtn').onclick = () => {
 (async () => {
   await refresh();
   setInterval(refresh, 3000);
+  setInterval(fetchLogs, 3000);
 })();
 </script>
 </body>
 </html>
+
+
+
+
 
