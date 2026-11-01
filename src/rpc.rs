@@ -27,6 +27,7 @@ impl RpcServer {
         let node_send = self.node.clone();
         let node_peers = self.node.clone();
         let node_miners = self.node.clone();
+        let node_logs = self.node.clone();
 
         let cors = warp::cors()
             .allow_any_origin()
@@ -352,6 +353,12 @@ impl RpcServer {
 
                     // /attacks — real attack-detection telemetry
         let attacks_node = self.node.clone();
+        let logs_node = node_logs.clone();
+        let logs = warp::path("logs").and(warp::get()).map(move || {
+            let node = logs_node.read();
+            warp::reply::json(&node.recent_logs)
+        });
+
         let attacks = warp::path("attacks").and(warp::get()).map(move || {
             let node = attacks_node.read();
             let now = current_timestamp();
@@ -421,6 +428,7 @@ impl RpcServer {
             .or(mempool)
             .or(health)
             .or(attacks)
+            .or(logs)
             .or(mining_pause)
             .or(mining_start)
             .or(mining_stop);
@@ -441,6 +449,10 @@ impl RpcServer {
         Ok(())
     }
 }
+
+
+
+
 
 
 
