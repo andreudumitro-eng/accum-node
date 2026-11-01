@@ -64,6 +64,14 @@ impl RpcServer {
                 .map(|b| b.difficulty.to_difficulty())
                 .unwrap_or(1.0);
 
+            let wallet_address = node.wallet.as_ref().map(|w| w.address.clone()).unwrap_or_default();
+            let (wallet_balance, wallet_utxo_count) = node
+                .storage
+                .get_utxos_by_address(&wallet_address)
+                .map(|v| (v.iter().map(|(_, o)| o.value).sum::<u64>(), v.len()))
+                .unwrap_or((0, 0));
+            let miner_loyalty = node.loyalty.get(&node.miner_id).map(|l| l.value).unwrap_or(0);
+
             warp::reply::json(&serde_json::json!({
                 "height": node.height,
                 "epoch": node.epoch,
@@ -85,6 +93,10 @@ impl RpcServer {
                 "avg_block_time_secs": (avg * 100.0).round() / 100.0,
                 "seconds_since_last_block": since_last,
                 "difficulty": (difficulty * 100.0).round() / 100.0,
+                "address": wallet_address,
+                "balance": wallet_balance,
+                "utxo_count": wallet_utxo_count,
+                "loyalty": miner_loyalty,
             }))
         });
 
@@ -429,6 +441,8 @@ impl RpcServer {
         Ok(())
     }
 }
+
+
 
 
 
