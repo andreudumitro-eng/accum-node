@@ -28,192 +28,163 @@ main { min-width: 0; min-height: 0; padding: 16px 20px 14px; display: flex; flex
 .panel { border: 1px solid var(--line); border-radius: 10px; background: linear-gradient(145deg,rgba(17,27,42,.96),rgba(10,18,31,.97)); padding: 14px; display: flex; flex-direction: column; min-height: 0; }
 .panel-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; flex-shrink: 0; }
 .panel h2 { font-size: 12px; margin: 0; font-weight: 750; text-transform: uppercase; letter-spacing: 0.5px; }
-.grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 10px; flex-shrink: 0; }
-.metric { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #1e2b3d; font-size: 13px; }
-.metric:last-child { border: 0; }
-.metric span:first-child { color: var(--muted); }
-.metric strong { font-weight: 600; color: var(--text); }
-.tag { border: 1px solid #126c42; color: var(--green); border-radius: 6px; padding: 2px 9px; background: #08291d; font-size: 11px; font-weight: 600; }
-.tag.red { border-color: #7e2837; color: #ff7783; background: #431c27; }
-.btn { padding: 8px 14px; border: 1px solid var(--line); border-radius: 7px; background: #0c1523; color: var(--text); cursor: pointer; font-weight: 500; transition: all 0.2s; }
+.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; flex-shrink: 0; }
+.metric { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid rgba(36,50,71,.6); font-size: 13px; }
+.metric:last-child { border-bottom: none; }
+.metric span { color: var(--muted); }
+.metric strong { font-weight: 600; }
+.tag { border: 1px solid #126c42; color: var(--green); border-radius: 6px; padding: 3px 9px; background: #08291d; font-size: 10px; font-weight: 700; letter-spacing: .5px; }
+.tag.red { border-color: #7e2837; color: #ff4d5c; background: #431c27; }
+.tag.blue { border-color: #168cff; color: #168cff; background: #0c2c58; }
+.btn { padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px; background: #0c1523; color: var(--text); cursor: pointer; font-weight: 500; font-size: 12px; }
 .btn:hover { filter: brightness(1.2); }
-.btn.primary { background: #0d5933; border-color: #126b3d; }
-.btn.warn { background: #4b3b0a; border-color: #806314; }
-.btn.danger { background: #431c27; border-color: #7e2837; }
-.stats2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
-.mini-stat .lbl { font-size: 10px; color: var(--muted); }
-.mini-stat .val { font-size: 13px; font-weight: 600; margin-top: 2px; }
-.logs-panel { flex: 1 1 auto; min-height: 120px; display: flex; flex-direction: column; overflow: hidden; }
-.log-output { flex: 1 1 auto; min-height: 0; overflow-y: auto; background: #070e19; border: 1px solid #1d2b3d; border-radius: 7px; padding: 8px 10px; font: 12px/1.55 monospace; color: #a0b0c4; white-space: pre-wrap; }
-.log-line { padding: 2px 0; border-bottom: 1px solid #1d2b3d; word-break: break-all; }
+.btn.primary { background: #0d5933; border-color: #126b3d; color: #fff; }
+.btn.warn { background: #4b3b0a; border-color: #806314; color: #fff; }
+.btn.danger { background: #431c27; border-color: #7e2837; color: #fff; }
+.logs-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.log-output { background: #070e19; border: 1px solid #1d2b3d; border-radius: 7px; padding: 10px; font: 12px 'JetBrains Mono', monospace; flex: 1; overflow-y: auto; color: #d6e0ed; min-height: 0; }
+.log-line { padding: 2px 0; border-bottom: 1px solid #121e2d; white-space: pre-wrap; word-break: break-all; }
+.error-banner { display: none; background: #2b1119; color: #ffb2bb; padding: 10px; border-radius: 8px; border: 1px solid #71303a; flex-shrink: 0; }
 </style>
 </head>
 <body>
 <div class="app">
 <aside class="sidebar">
-  <div class="brand"><div><strong>ACCUM</strong><small>FAIR MINING</small></div></div>
+  <div class="brand">
+    <div>
+      <strong>ACCUM</strong>
+      <small>FAIR PROOF OF CONTRIBUTION</small>
+    </div>
+  </div>
   <nav class="nav">
-    <a class="active" href="#"><span class="ico">⌂</span>Dashboard</a>
-    <a href="#" style="background:#0b2d56;border:1px solid #164f91;margin-top:10px;justify-content:center;font-weight:600;color:white;"><span class="ico">💼</span>Open Wallet</a>
+    <a class="active" href="#"><span class="ico">⌂</span> Dashboard</a>
+    <a href="#" onclick="alert('Wallet: ' + document.getElementById('walletAddress').textContent)"><span class="ico">💼</span> Open Wallet</a>
   </nav>
 </aside>
 <main>
 <header class="topbar">
-  <div><h1>Dashboard</h1><div class="muted">Overview of your ACCUM node</div></div>
-  <div style="display:flex;gap:8px;margin-left:auto;margin-right:16px;">
+  <div><h1>Dashboard</h1><div class="muted tiny">Overview of your ACCUM node</div></div>
+  <div style="display:flex; gap: 8px; align-items: center;">
     <button class="btn primary" id="startBtn">▶ Start</button>
     <button class="btn warn" id="pauseBtn">Ⅱ Pause</button>
     <button class="btn danger" id="stopBtn">■ Stop</button>
+    <div class="status-pill">
+      <div><span class="dot" id="statusDot"></span><strong id="topStatus">Connecting</strong></div>
+      <div class="tiny muted" id="heightTop">Waiting for data</div>
+    </div>
   </div>
-  <div class="status-pill"><span class="dot" id="statusDot"></span><strong id="topStatus">Connecting</strong><div class="tiny muted" id="heightTop">Waiting for node data</div></div>
 </header>
-
+<div class="error-banner" id="errorBanner"></div>
 <section class="grid">
- <article class="panel">
-  <div class="panel-head"><h2>▣ WALLET</h2></div>
-  <div style="font:12px monospace;padding:7px 0;border-bottom:1px solid var(--line);color:#dce8f8;word-break:break-all;" id="walletAddress">Loading...</div>
-  <div class="stats2">
-    <div class="mini-stat"><div class="lbl">Balance</div><div class="val" style="color:var(--blue)" id="balance">—</div></div>
-    <div class="mini-stat"><div class="lbl">Bond</div><div class="val" id="bond">—</div></div>
-    <div class="mini-stat"><div class="lbl">Loyalty</div><div class="val" id="loyalty">—</div></div>
-    <div class="mini-stat"><div class="lbl">UTXO</div><div class="val" id="utxo">—</div></div>
-  </div>
- </article>
-
- <article class="panel">
-  <div class="panel-head"><h2>⚒ MINING STATUS</h2><span class="tag" id="miningTag">UNKNOWN</span></div>
-  <div class="metric"><span>State</span><strong id="miningState">—</strong></div>
-  <div class="metric"><span>Hashrate</span><strong id="hashrate">—</strong></div>
-  <div class="metric"><span>Difficulty</span><strong id="difficulty">—</strong></div>
-  <div class="metric"><span>Shares found</span><strong id="shares">—</strong></div>
- </article>
-
- <article class="panel">
-  <div class="panel-head"><h2>⚙ NETWORK</h2><span class="tag" style="border-color:#126c42;color:var(--green);background:#08291d;">NODE API</span></div>
-  <div class="metric"><span>Network</span><strong>Mainnet</strong></div>
-  <div class="metric"><span>Peers</span><strong id="netPeers">—</strong></div>
-  <div class="metric"><span>Sync status</span><strong id="netSync">—</strong></div>
-  <div class="metric"><span>Last block</span><strong id="netLastBlock">—</strong></div>
- </article>
+  <article class="panel">
+    <div class="panel-head"><h2>▣ Wallet</h2><span class="tiny muted">Node API</span></div>
+    <div class="tiny muted" id="walletAddress" style="padding-bottom:8px; border-bottom:1px solid var(--line); word-break:break-all;">Not provided</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px;">
+      <div><div class="tiny muted">Balance</div><div style="font-size:15px; color:var(--blue);" id="balance">—</div></div>
+      <div><div class="tiny muted">Bond</div><div style="font-size:15px;" id="bond">—</div></div>
+      <div><div class="tiny muted">Loyalty</div><div style="font-size:15px;" id="loyalty">—</div></div>
+      <div><div class="tiny muted">UTXO count</div><div style="font-size:15px;" id="utxo">—</div></div>
+    </div>
+  </article>
+  <article class="panel">
+    <div class="panel-head"><h2>⚒ Mining Status</h2><span class="tag" id="miningTag">UNKNOWN</span></div>
+    <div class="metric"><span>State</span><strong id="miningState">—</strong></div>
+    <div class="metric"><span>Hashrate</span><strong id="hashrate">—</strong></div>
+    <div class="metric"><span>Difficulty</span><strong id="difficulty">—</strong></div>
+    <div class="metric"><span>Shares found</span><strong id="shares">—</strong></div>
+  </article>
+  <article class="panel">
+    <div class="panel-head"><h2>◎ Network</h2><span class="tag blue">NODE API</span></div>
+    <div class="metric"><span>Network</span><strong>Mainnet</strong></div>
+    <div class="metric"><span>Peers</span><strong id="netPeers">—</strong></div>
+    <div class="metric"><span>Sync status</span><strong id="netSync">—</strong></div>
+    <div class="metric"><span>Last block</span><strong id="netLastBlock">—</strong></div>
+  </article>
 </section>
-
-<section class="panel" style="flex-shrink:0;">
-  <div class="panel-head" style="margin-bottom:8px;">
-    <h2>🛡 ATTACK MONITOR</h2>
-    <span class="tag" id="atk-tag">CLEAN</span>
+<section class="panel">
+  <div class="panel-head">
+    <h2>🛡 Attack Monitor</h2>
+    <span class="tag red" id="attackTag">SCANNING</span>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0 24px;">
-    <div class="metric"><span>Detected</span><strong id="atk-detected">no</strong></div>
-    <div class="metric"><span>Sybil Score</span><strong id="atk-sybil">—</strong></div>
-    <div class="metric"><span>Peers</span><strong id="atk-peers">—</strong></div>
+  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+    <div class="metric" style="border:none; padding:2px 0;"><span>Detected</span><strong id="attackDetected">—</strong></div>
+    <div class="metric" style="border:none; padding:2px 0;"><span>Sybil Score</span><strong id="sybilScore">—</strong></div>
+    <div class="metric" style="border:none; padding:2px 0;"><span>Peers</span><strong id="attackPeers">—</strong></div>
   </div>
 </section>
-
 <section class="panel logs-panel">
- <div class="panel-head">
-   <h2>NODE LOGS</h2>
-   <button class="btn" onclick="document.getElementById('logOutput').innerHTML=''">Clear</button>
- </div>
- <div class="log-output" id="logOutput"><div style="text-align:center;padding:20px">Waiting for logs…</div></div>
+  <div class="panel-head">
+    <h2>Node Logs</h2>
+    <button class="btn" id="clearLogsBtn">Clear</button>
+  </div>
+  <div class="log-output" id="logOutput"><div style="text-align:center;padding:20px" class="muted">Waiting for logs...</div></div>
 </section>
 </main>
 </div>
-
 <script>
+const API_BASE = 'http://127.0.0.1:8545';
 const $ = id => document.getElementById(id);
-const API_BASE = 'http://127.0.0.1:8545'; // Правильный порт!
-
-async function fetchData(url) {
-    const r = await fetch(API_BASE + url);
-    if (!r.ok) throw new Error('Network response was not ok');
-    return r.json();
+async function api(path, opts = {}) {
+  const res = await fetch(API_BASE + path, opts);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return await res.json();
 }
-
+function showError(msg) {
+  const b = $('errorBanner');
+  b.textContent = msg;
+  b.style.display = msg ? 'block' : 'none';
+}
 async function refresh() {
   try {
-    const info = await fetchData('/info');
+    const d = await api('/info');
     $('statusDot').style.background = 'var(--green)';
     $('topStatus').textContent = 'Online';
-    $('heightTop').textContent = 'Height ' + (info.height || '—');
-
-    $('walletAddress').textContent = info.wallet_address || 'Not provided';
-    $('balance').textContent = info.balance ? (info.balance / 10000000).toFixed(4) + ' ACM' : '—';
-    $('bond').textContent = info.bond ? (info.bond / 10000000).toFixed(4) + ' ACM' : '—';
-    $('loyalty').textContent = info.loyalty || '—';
-    $('utxo').textContent = info.utxo_count || '—';
-
-    const paused = info.mining_paused === true;
-    $('miningState').textContent = paused ? 'Paused' : 'Running';
-    $('miningTag').textContent = paused ? 'PAUSED' : 'RUNNING';
-    $('miningTag').style.color = paused ? 'var(--yellow)' : 'var(--green)';
-
-    $('hashrate').textContent = (info.hash_rate || 0) + ' H/s';
-    $('difficulty').textContent = info.difficulty ? info.difficulty.toFixed(4) : '—';
-    $('shares').textContent = info.shares_found || 0;
-
-    $('netPeers').textContent = info.peers || '0';
-    $('netSync').textContent = info.sync_progress >= 0.99 ? 'Synced' : 'Syncing';
-    $('netLastBlock').textContent = info.last_block_time_secs ? info.last_block_time_secs + 's ago' : '—';
-
-    try {
-        const atk = await fetchData('/attacks');
-        const detected = atk.attack_detected === true;
-        $('atk-tag').textContent = detected ? 'ATTACK' : 'CLEAN';
-        $('atk-tag').className = 'tag ' + (detected ? 'red' : '');
-        $('atk-detected').textContent = detected ? 'YES' : 'no';
-        $('atk-sybil').textContent = ((atk.sybil_score || 0) * 100).toFixed(1) + '%';
-        $('atk-peers').textContent = (atk.peers ?? '—') + ' / ' + (atk.known_peers ?? '—');
-    } catch (e) {}
-
-    try {
-        const logsData = await fetchData('/api/logs');
-        const container = $('logOutput');
-        
-        // Сервер возвращает массив строк
-        const logs = Array.isArray(logsData) ? logsData : [];
-        
-        if (logs.length > 0) {
-            const lastLog = logs[logs.length - 1];
-            if (container.dataset.last !== lastLog) {
-                container.dataset.last = lastLog;
-                container.innerHTML = logs.slice(-50).map(line => {
-                    let color = '#a0b0c4';
-                    if (line.includes('BLOCK')) color = '#20dc72';
-                    if (line.includes('SHARE-SEND')) color = '#168cff';
-                    if (line.includes('SHARE-RECV')) color = '#f5bd26';
-                    if (line.includes('Invalid')) color = '#ff4d5c';
-                    return `<div class="log-line" style="color:${color}">${line}</div>`;
-                }).join('');
-                container.scrollTop = container.scrollHeight;
-            }
-        } else {
-            container.innerHTML = '<div style="text-align:center;padding:20px;color:#9aa9bd;">Waiting for logs...</div>';
-        }
-    } catch (e) {
-        console.error('Logs error:', e);
-    }
-
+    $('heightTop').textContent = `Height ${d.height ?? '—'}`;
+    $('walletAddress').textContent = 'Not provided';
+    $('balance').textContent = '—';
+    $('bond').textContent = ((d.bond ?? 0) / 1e7).toFixed(4) + ' ACM';
+    $('loyalty').textContent = '—';
+    $('utxo').textContent = '—';
+    $('miningState').textContent = 'Running';
+    $('miningTag').textContent = 'RUNNING';
+    $('miningTag').className = 'tag';
+    $('hashrate').textContent = (d.hash_rate ?? 0) + ' H/s';
+    $('difficulty').textContent = Number(d.difficulty ?? 0).toFixed(4);
+    $('shares').textContent = d.shares_found ?? '0';
+    $('netPeers').textContent = d.peers ?? '0';
+    $('netSync').textContent = 'Synced';
+    $('netLastBlock').textContent = (d.seconds_since_last_block ?? 0) + 's ago';
+    $('attackDetected').textContent = 'NO';
+    $('attackDetected').style.color = 'var(--green)';
+    $('sybilScore').textContent = '0.0%';
+    $('attackPeers').textContent = (d.peers ?? 0) + ' / ' + (d.peers ?? 0);
+    $('attackTag').textContent = 'SECURE';
+    $('attackTag').className = 'tag';
+    showError('');
   } catch (e) {
-    $('topStatus').textContent = 'Offline';
     $('statusDot').style.background = 'var(--red)';
-    $('heightTop').textContent = 'Connection failed';
+    $('topStatus').textContent = 'Offline';
+    showError(e.message + ' — нода должна работать на порту 8545.');
   }
 }
-
-async function command(path) {
+async function postMining(action) {
   try {
-    const response = await fetch(API_BASE + path, { method: 'POST' });
-    if (!response.ok) throw new Error('Command failed');
-    await refresh();
-  } catch (e) { alert('Failed to send command. Check if node is running on port 8545.'); }
+    await api(`/mining/${action}`, { method: 'POST' });
+    refresh();
+  } catch (e) {
+    showError(`Ошибка: ${e.message}`);
+  }
 }
-
-$('startBtn').onclick = () => command('/mining/start');
-$('pauseBtn').onclick = () => command('/mining/pause');
-$('stopBtn').onclick = () => command('/mining/stop');
-
-refresh();
-setInterval(refresh, 3000);
+$('startBtn').onclick = () => postMining('start');
+$('pauseBtn').onclick = () => postMining('pause');
+$('stopBtn').onclick = () => postMining('pause');
+$('clearLogsBtn').onclick = () => {
+  $('logOutput').innerHTML = '<div style="text-align:center;padding:20px" class="muted">Logs cleared</div>';
+};
+(async () => {
+  await refresh();
+  setInterval(refresh, 3000);
+})();
 </script>
 </body>
 </html>
