@@ -46,6 +46,13 @@ main { min-width: 0; min-height: 0; padding: 16px 20px 14px; display: flex; flex
 .log-line { padding: 2px 0; border-bottom: 1px solid #121e2d; white-space: pre-wrap; word-break: break-all; }
 .error-banner { display: none; background: #2b1119; color: #ffb2bb; padding: 10px; border-radius: 8px; border: 1px solid #71303a; flex-shrink: 0; }
 </style>
+
+<style>
+  #startBtn, #pauseBtn, #stopBtn { display: none !important; }
+  .mining-hint { background:#0e1725; border:1px solid var(--line); border-radius:8px; padding:8px 12px; font-size:11px; color:var(--muted); margin-left:10px; }
+  .mining-hint b { color:var(--text); }
+  .mining-hint code { background:#0a1220; padding:1px 4px; border-radius:3px; color:var(--blue); }
+</style>
 </head>
 <body>
 <div class="app">
@@ -53,7 +60,7 @@ main { min-width: 0; min-height: 0; padding: 16px 20px 14px; display: flex; flex
   <div class="brand">
     <div>
       <strong>ACCUM</strong>
-      <small>FAIR PROOF OF CONTRIBUTION</small>
+      <small>PoCI — PROOF OF CONTRIBUTION INDEX</small>
     </div>
   </div>
   <nav class="nav">
@@ -63,8 +70,11 @@ main { min-width: 0; min-height: 0; padding: 16px 20px 14px; display: flex; flex
 </aside>
 <main>
 <header class="topbar">
-  <div><h1>Dashboard</h1><div class="muted tiny">Overview of your ACCUM node</div></div>
+  <div><h1>Dashboard</h1><div class="muted tiny">Overview of your PoCI node</div></div>
   <div style="display:flex; gap: 8px; align-items: center;">
+<div class="mining-hint" style="margin-right:8px;">
+  <b>Mining:</b> Start: <code>.\accum-node.exe node</code> | Stop: <code>Ctrl+C</code> | Pause: <code>pause.bat</code>
+</div>
     <button class="btn primary" id="startBtn">▶ Start</button>
     <button class="btn warn" id="pauseBtn">Ⅱ Pause</button>
     <button class="btn danger" id="stopBtn">■ Stop</button>
@@ -208,6 +218,11 @@ $('clearLogsBtn').onclick = () => {
 </script>
 </body>
 </html>
+
+
+
+
+
 
 
 
