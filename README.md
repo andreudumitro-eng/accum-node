@@ -398,11 +398,17 @@ Weights:
 - 0.2 (20%) for bond — economic alignment
 
 ### 9.2 Component Normalization
-norm_X_i = X_i / max_X_in_epoch
 
-text
+For each component (shares, loyalty, bond), normalization is performed differently:
 
-For each component (shares, loyalty, bond): `max_X_in_epoch` = maximum value among all miners in the epoch
+- **Loyalty:** linear normalization
+  `norm_loyalty_i = loyalty_i / max_loyalty_in_epoch`
+
+- **Shares and Bond:** square root normalization
+  `norm_shares_i = sqrt(shares_raw_i) / max_sqrt_in_epoch`
+  `norm_bond_i = sqrt(bond_raw_i) / max_sqrt_bond_in_epoch`
+
+Where `max_X_in_epoch` is the maximum value among all miners in the epoch.
 
 ### 9.3 Shares Normalization = Square Root
 
@@ -1115,8 +1121,6 @@ VALIDATOR_COUNCIL_SIZE = 7
 SECURITY_COUNCIL_SIZE = 9
 SECURITY_COUNCIL_QUORUM = 6
 
-text
-
 ### 18.3 Serialization
 
 - All integers are serialized in little‑endian order
@@ -1339,6 +1343,6 @@ Share Limit	5000 per miner per epoch
 Invalid Share Slashing	>30% with Merkle proof
 Difficulty Adjustment	Every 120 blocks, ±25%
 Governance	3-phase decentralization
-Author: Andrii Dumitro (Original), Enhanced Versionф
+Author: Andrii Dumitro (Original), Enhanced Version
 Date: March 2026
 Version: 3.2+ (Production‑Ready, with Resilience & Scalability Enhancements)
