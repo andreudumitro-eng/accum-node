@@ -195,8 +195,6 @@ Upon receiving share packet:
 3. Perform cheap pre‑filter:
 prefilter = SHA256(header || nonce)
 
-text
-
 If `prefilter > share_prefilter_target`, reject without computing Argon2.
 
 4. Recompute `hash = Argon2id(header)`
