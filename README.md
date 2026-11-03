@@ -38,7 +38,7 @@ Appendix B: Argon2id Benchmarks
 
 ## 1. Introduction
 
-ACCUM is a next‑generation blockchain protocol built on an innovative consensus mechanism called Fair Proof‑of‑Contribution (F‑PoC). The protocol addresses the structural weaknesses of classical Proof‑of‑Work, while preserving its strengths: decentralization, openness, and objective security.
+ACCUM is a next‑generation blockchain protocol built on an innovative consensus mechanism called Fair Proof‑of‑Contribution (F‑PoC), which uses the Proof‑of‑Contribution Index (PoCI) to calculate each miner's share. The protocol addresses the structural weaknesses of classical Proof‑of‑Work, while preserving its strengths: decentralization, openness, and objective security.
 
 ACCUM solves classical PoW problems by redefining reward distribution. Instead of rewarding only the miner who finds a block, ACCUM distributes rewards across three independent axes of contribution:
 
