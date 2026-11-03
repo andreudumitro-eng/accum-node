@@ -14,10 +14,13 @@ echo               ACCUM (PoCI) IS RUNNING
 echo ===================================================
 echo.
 echo  - Node is loading blocks... (see logs below)
-echo  - Dashboard is open at: http://127.0.0.1:8555
-echo  - Wallet is open at:    http://127.0.0.1:8556
+echo  - Dashboard: http://127.0.0.1:8555
+echo  - Wallet:    http://127.0.0.1:8556
 echo.
-echo  To STOP safely, double-click stop.bat
+echo  HOW TO STOP:
+echo  1. Easiest: Just close this window (click X).
+echo  2. Or run stop.bat in the same folder.
+echo  3. Or press Ctrl+C on your keyboard.
 echo ===================================================
 echo.
 
