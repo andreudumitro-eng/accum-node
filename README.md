@@ -1334,7 +1334,7 @@ Block Reward	0.05 ACM
 Epoch Reward	72 ACM
 Bond Minimum	1 ACM
 Bond Lockup	20,160 blocks (~14 days)
-Share Pre-filter	SHA256(header		nonce)
+Share Pre-filter	SHA256(header || nonce)
 Share Limit	5000 per miner per epoch
 Invalid Share Slashing	>30% with Merkle proof
 Difficulty Adjustment	Every 120 blocks, ±25%
