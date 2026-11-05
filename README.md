@@ -3,87 +3,87 @@
 # ACCUM
 ### Fair Proof-of-Contribution (F-PoC) Blockchain Protocol
 
-[![Version](https://img.shields.io/badge/version-3.2%2B-blue?style=for-the-badge)](https://github.com/andreudumitro-eng/accum-node/releases)
-[![Language](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Version](https://img.shields.io/badge/version-3.2%2B-blueviolet?style=for-the-badge)](https://github.com/andreudumitro-eng/accum-node/releases)
+[![Language](https://img.shields.io/badge/Rust-1.75%2B-000000?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
 **A decentralized, CPU-friendly network engineered to eliminate the structural inequalities of classical Proof-of-Work.**
 
-[Download Installer](https://github.com/andreudumitro-eng/accum-node/releases/latest) • [Whitepaper](WHITEPAPER.md) • [RPC API](#rpc-api)
+[🚀 Download Installer](https://github.com/andreudumitro-eng/accum-node/releases/latest) &nbsp;•&nbsp; [📖 Whitepaper](WHITEPAPER.md) &nbsp;•&nbsp; [🌐 RPC API](#rpc-api)
 
 </div>
 
 ---
 
-## 1. The Problem with Traditional Consensus
+## 🌟 The Vision
 
-Classical Proof-of-Work (PoW) networks, while secure, suffer from a fundamental flaw: **the "winner-takes-all" incentive structure**. 
+Classical Proof-of-Work networks, while secure, force miners into a "winner-takes-all" lottery. This structure inevitably leads to extreme hardware centralization (ASIC monopolies), massive energy waste, and "mercenary mining," where participants jump between networks based solely on momentary profitability. 
 
-This design forces individual participants into centralized mining pools, leads to extreme hardware centralization (ASIC monopolies), and wastes enormous amounts of energy on a lottery system where the smallest miners rarely see a return. 
+**ACCUM was built to fix this.** 
 
-Furthermore, classical PoW offers no economic or historical incentive for long-term network stability—miners are incentivized to jump between networks based on momentary profitability, often referred to as "mercenary mining."
+We introduce **Fair Proof-of-Contribution (F-PoC)** — a consensus mechanism that values long-term commitment and economic alignment just as much as raw computational power. By using the **Proof-of-Contribution Index (PoCI)**, ACCUM creates a truly decentralized environment where solo CPU miners can compete fairly and profitably.
 
 ---
 
-## 2. The ACCUM Solution
+## ⚖️ Tokenomics & Reward Distribution
 
-ACCUM introduces **Fair Proof-of-Contribution (F-PoC)**. Instead of relying on a single, one-dimensional metric (raw hash power), ACCUM evaluates a miner's overall value to the network using the **Proof-of-Contribution Index (PoCI)**.
+ACCUM eliminates lottery variance. Instead of rewarding only the block finder, rewards are distributed fairly across three independent axes over 1,440-block epochs (24 hours).
 
-The PoCI distributes block rewards across three independent, weighted axes:
-
-| Contribution Axis | Weight | Protocol Mechanism |
+| 🧩 Contribution Axis | ⚖️ Weight | ⚙️ Protocol Mechanism |
 | :--- | :---: | :--- |
 | **Computational Work** | **60%** | Valid Argon2id shares submitted per epoch. |
 | **Network Loyalty** | **20%** | Continuous participation across consecutive epochs. |
 | **Economic Bond** | **20%** | Capital locked in a smart contract for ~14 days. |
 
-> **Economic Implication:** ACCUM structurally neutralizes Sybil attacks, 51% attacks, and "mercenary mining." It guarantees that long-term, honest participation is mathematically more profitable than short-term exploitation.
+**Key Economic Metrics:**
+*   **Total Supply:** Fixed at exactly 150,000,000 ACM.
+*   **Block Reward:** 0.05 ACM.
+*   **Epoch Reward:** 72 ACM (distributed every 24 hours).
+*   **Inflation Rate:** Ultra-low, fixed at ~0.0175% annually.
+*   **No Premine:** Genesis coins are permanently unspendable. 100% of circulating supply is generated through fair mining.
 
 ---
 
-## 3. Core Architecture & Cryptographic Design
+## 🏗️ Core Architecture
 
-### 3.1 ASIC-Resistance
+### 🛡️ ASIC-Resistance by Design
 ACCUM utilizes **Argon2id** (RFC 9106) with a memory hardness of **256 MiB** per hash. 
-*   **Why it matters:** The cost of developing and manufacturing a specialized ASIC for 256 MiB memory-hard functions is economically unviable. Commodity CPUs remain highly competitive, ensuring true hardware decentralization.
+*   Building a specialized ASIC for memory-hard functions is economically unviable. Commodity CPUs remain highly competitive, ensuring true hardware decentralization and a level playing field.
 
-### 3.2 No Premine & Fair Launch
-*   **Genesis Supply:** 50 ACM (Unspendable, private key destroyed).
-*   **Total Supply:** Fixed at 150,000,000 ACM.
-*   **Emission:** All circulating coins are generated exclusively through network consensus (mining).
-
-### 3.3 Slashing & Economic Security
-To prevent malicious behavior, ACCUM enforces a strict **Bond Lockup** mechanism (~14 days). Any attempt at **Equivocation** (double-signing blocks) or **Invalid Share Flooding** (>30% invalid shares) results in a **100% slashing of the miner's bond**. This makes attacks financially suicidal.
+### ⚖️ Slashing & Economic Security
+Malicious behavior is financially suicidal. ACCUM enforces a strict **Bond Lockup** mechanism (~14 days). 
+*   Any attempt at **Equivocation** (double-signing blocks) or **Invalid Share Flooding** (>30% invalid shares) results in a **100% slashing of the miner's bond**.
 
 ---
 
-## 4. Installation & Quick Start
+## 🚀 Quick Start
 
 ### Option A: Pre-built Installer (Recommended)
-The easiest way to run an ACCUM node is to use the official Windows installer, which includes the Node, the Wallet, and automatic startup scripts.
+The easiest way to run an ACCUM node is to use the official installer. It includes the Node, the Wallet, and automatic startup scripts.
 
 1. Go to the **[Releases](https://github.com/andreudumitro-eng/accum-node/releases/latest)** page.
 2. Download **`ACCUM_Setup.exe`**.
-3. Run the installer and follow the on-screen instructions.
+3. Run the installer.
 4. Launch **ACCUM Node** from your Desktop or Start Menu.
-   * The node will start syncing, and the web dashboard will automatically open at `http://127.0.0.1:8555`.
+
+> ⚠️ **Dashboard Note:** The Web UI runs locally and is only accessible while the node is running. It fetches data from the local RPC API at `http://127.0.0.1:8545`. Once the node is started, open your browser at **`http://127.0.0.1:8555`**.
 
 ### Option B: Build from Source (For Developers)
 
 **Prerequisites:** Rust (Stable Toolchain), 4GB+ RAM.
 
 ```bash
-# 1. Clone the repository
+# Clone the repository
 git clone https://github.com/andreudumitro-eng/accum-node.git
 cd accum-node
 
-# 2. Build the node in release mode
+# Build the node in release mode
 cargo build --release
 
-# 3. Start the node and P2P networking
+# Start the node and P2P networking
 ./target/release/accum-node node
-5. <a id="rpc-api"></a>RPC API Reference
-ACCUM provides a high-performance JSON-RPC interface for exchanges, pools, and block explorers.
+📡 <a id="rpc-api"></a>RPC API Reference
+ACCUM provides a high-performance JSON-RPC interface for exchanges, pools, and block explorers. The RPC server listens on port 8545.
 
 Endpoint	Method	Description
 /info	GET	Node telemetry: height, epoch, peers, difficulty, wallet balance, UTXOs.
