@@ -1251,12 +1251,10 @@ impl SyncManager {
         let (common_height, _common_hash) = match node.find_common_ancestor(fork_blocks, node.height) {
             Some(x) => x,
             None => {
-                println!("🔀 [sync] No common ancestor — rolling back to genesis (IBD)");
-                if let Err(e) = node.rollback_to(0) {
-                    return Err(format!("{}: rollback failed: {}", accepted, e));
-                }
-                self.local_height = 0;
-                (0, [0u8; 32])
+                println!("[sync] No common ancestor in this batch. Skipping batch, keeping local chain.");
+                // Do NOT roll back to genesis: that would wipe the local chain.
+                // Reject the batch and keep our chain intact.
+                return Ok(node.height);
             }
         };
 
