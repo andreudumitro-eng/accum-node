@@ -1,12 +1,15 @@
 @echo off
-title ACCUM Node
+title ACCUM Node - Mining Active
 color 0A
 
-REM --- Start Wallet ---
-start "" "accum-wallet.exe" gui
+REM --- Change to script directory ---
+cd /d "%~dp0"
+
+REM --- Start Wallet (hidden) ---
+start "" "%~dp0accum-wallet.exe" gui
 
 REM --- Open Dashboard ---
-timeout /t 3 >nul
+timeout /t 5 >nul
 start "" "http://127.0.0.1:8555"
 
 echo ===================================================
@@ -24,5 +27,5 @@ echo  3. Or press Ctrl+C on your keyboard.
 echo ===================================================
 echo.
 
-REM --- Start Node ---
-accum-node.exe node
+REM --- Start Node (logs will appear below) ---
+"%~dp0accum-node.exe" node
