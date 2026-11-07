@@ -1,8 +1,8 @@
 @echo off
-title ACCUM Node — Mining Active
+title ACCUM Node
 color 0A
 
-REM --- Start Wallet (hidden) ---
+REM --- Start Wallet ---
 start "" "accum-wallet.exe" gui
 
 REM --- Open Dashboard ---
@@ -24,5 +24,5 @@ echo  3. Or press Ctrl+C on your keyboard.
 echo ===================================================
 echo.
 
-REM --- Start Node (in this window, logs will appear below) ---
+REM --- Start Node ---
 accum-node.exe node
