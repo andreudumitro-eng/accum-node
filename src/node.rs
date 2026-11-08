@@ -1419,7 +1419,7 @@ impl Node {
 
             if let Some((peer_id, current_height, target_height, status)) = session_data {
                 if status == SyncStatus::Requesting {
-                    let from_height = current_height + 1;
+                    let from_height = current_height;
                     let to_height = (from_height + SYNC_BATCH_SIZE - 1).min(target_height);
 
                     if from_height <= to_height {
@@ -2564,18 +2564,22 @@ impl Node {
             return None;
         }
 
-        // foreign_blocks[i] имеет высоту (start_height + i + 1).
-        // Ищем общий предок: нашу высоту prev_height = foreign_height - 1,
-        // где хеш нашего блока-родителя совпадает с prev_hash foreign-блока.
-        for i in 0..foreign_blocks.len() {
-            let foreign_height = start_height + i as u64 + 1;
-            let prev_height = foreign_height.saturating_sub(1);
-            if let Some(our_header) = self.blocks.get(prev_height as usize) {
-                let our_hash = our_header.hash(&mut self.argon2);
-                if our_hash == foreign_blocks[i].header.prev_hash {
-                    return Some((prev_height, our_hash));
+        let target_prev_hash = foreign_blocks[0].header.prev_hash;
+        let mut check_height = start_height;
+
+        loop {
+            // Ищем в storage (база данных), а не в памяти
+            if let Ok(Some(our_block)) = self.storage.get_block(check_height) {
+                let our_hash = our_block.header.hash(&mut self.argon2);
+                if our_hash == target_prev_hash {
+                    return Some((check_height, our_hash));
                 }
             }
+
+            if check_height == 0 {
+                break;
+            }
+            check_height -= 1;
         }
 
         None

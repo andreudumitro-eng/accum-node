@@ -1248,15 +1248,28 @@ impl SyncManager {
         );
 
         // 1. Find common ancestor for the whole batch.
-        let (common_height, _common_hash) = match node.find_common_ancestor(fork_blocks, node.height) {
-            Some(x) => x,
-            None => {
-                println!("[sync] No common ancestor in this batch. Skipping batch, keeping local chain.");
-                // Do NOT roll back to genesis: that would wipe the local chain.
-                // Reject the batch and keep our chain intact.
-                return Ok(node.height);
+        // 1. First, check if the very first block of the batch fits directly on our tip.
+        let mut common_height = node.height;
+        let mut found_ancestor = false;
+
+        // Try to find the previous hash of the first foreign block in our storage.
+        let target_prev_hash = fork_blocks[0].header.prev_hash;
+
+        // Look for it in our recent blocks (checking 50 blocks back)
+        for h in (0..=node.height).rev().take(50) {
+            if let Ok(Some(our_block)) = node.storage.get_block(h) {
+                if our_block.header.hash(&mut node.argon2) == target_prev_hash {
+                    common_height = h;
+                    found_ancestor = true;
+                    break;
+                }
             }
-        };
+        }
+
+        if !found_ancestor {
+            println!("[sync] Could not find common ancestor in recent blocks. Skipping batch.");
+            return Ok(node.height);
+        }
 
         println!(
             "🔀 [sync] Common ancestor at height {}. Comparing work...",
