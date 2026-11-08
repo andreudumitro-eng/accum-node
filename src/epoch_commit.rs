@@ -1,11 +1,11 @@
-//! Epoch commit — канонический снимок состояния эпохи.
+//! Epoch commit — canonical snapshot of the epoch state.
 //!
-//! Коммит покрывает ВСЕ три входа PoCI:
-//!   - shares  (вес 0.6)
-//!   - loyalty (вес 0.2)
-//!   - bonds   (вес 0.2)
-//! Это делает возможной полную независимую проверку наград
-//! любым узлом после завершения эпохи.
+//! The commit covers ALL three PoCI inputs:
+//!   - shares  (weight 0.6)
+//!   - loyalty (weight 0.2)
+//!   - bonds   (weight 0.2)
+//! This enables full independent verification of rewards
+//! by any node after the epoch ends.
 
 use crate::miner::LoyaltyData;
 use crate::storage::Bond;
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-/// Канонический коммит эпохи. Кладётся в блок на границе эпохи.
+/// Canonical epoch commit. Placed in the block at the epoch boundary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EpochCommit {
     pub epoch: u32,
@@ -24,12 +24,12 @@ pub struct EpochCommit {
     pub loyalty_merkle_root: Hash32,
     pub total_shares: u64,
     pub miners_count: u32,
-    pub previous_commit_hash: Hash32, // [0;32] для первой эпохи
+    pub previous_commit_hash: Hash32, // [0;32] for the first epoch
 }
 
 impl EpochCommit {
-    /// Стабильный хеш коммита. НЕ через bincode — только явные поля
-    /// с префиксом версии.
+    /// Stable commit hash. NOT via bincode — only explicit fields
+    /// with a version prefix.
     pub fn hash(&self) -> Hash32 {
         let mut h = Sha256::new();
         h.update(b"ACCUM-EPOCH-COMMIT-v1");
@@ -47,7 +47,7 @@ impl EpochCommit {
         out
     }
 
-    /// Собрать коммит из текущего состояния узла.
+    /// Build a commit from the current node state.
     pub fn build(
         epoch: u32,
         block_height: Height,
@@ -80,14 +80,14 @@ impl EpochCommit {
     }
 }
 
-/// Запись майнера по шарам.
+/// Miner record for shares.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MinerShareEntry {
     pub miner_id: MinerId,
     pub shares: u64,
 }
 
-/// Запись майнера по bond.
+/// Miner record for bond.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MinerBondEntry {
     pub miner_id: MinerId,
@@ -96,7 +96,7 @@ pub struct MinerBondEntry {
     pub lock_until: u64,
 }
 
-/// Запись майнера по loyalty.
+/// Miner record for loyalty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MinerLoyaltyEntry {
     pub miner_id: MinerId,
@@ -104,10 +104,10 @@ pub struct MinerLoyaltyEntry {
 }
 
 // ============================================================
-// Merkle-хелперы
+// Merkle helpers
 // ============================================================
 
-/// Универсальный merkle-root по списку листьев.
+/// Universal merkle root from a list of leaves.
 pub fn merkle_root_from_leaves(mut leaves: Vec<Hash32>) -> Hash32 {
     if leaves.is_empty() {
         return [0u8; 32];
@@ -135,7 +135,7 @@ pub fn merkle_root_from_leaves(mut leaves: Vec<Hash32>) -> Hash32 {
     leaves[0]
 }
 
-/// Merkle root по шарам: лист = SHA256(miner_id || shares_le).
+/// Merkle root for shares: leaf = SHA256(miner_id || shares_le).
 pub fn compute_shares_merkle_root(entries: &[MinerShareEntry]) -> Hash32 {
     let leaves: Vec<Hash32> = entries
         .iter()
@@ -152,8 +152,8 @@ pub fn compute_shares_merkle_root(entries: &[MinerShareEntry]) -> Hash32 {
     merkle_root_from_leaves(leaves)
 }
 
-/// Merkle root по bonds.
-/// Лист = SHA256(miner_id || amount_le || created_at_le || lock_until_le).
+/// Merkle root for bonds.
+/// Leaf = SHA256(miner_id || amount_le || created_at_le || lock_until_le).
 pub fn compute_bonds_merkle_root(entries: &[MinerBondEntry]) -> Hash32 {
     let leaves: Vec<Hash32> = entries
         .iter()
@@ -172,7 +172,7 @@ pub fn compute_bonds_merkle_root(entries: &[MinerBondEntry]) -> Hash32 {
     merkle_root_from_leaves(leaves)
 }
 
-/// Merkle root по loyalty: лист = SHA256(miner_id || value_le).
+/// Merkle root for loyalty: leaf = SHA256(miner_id || value_le).
 pub fn compute_loyalty_merkle_root(entries: &[MinerLoyaltyEntry]) -> Hash32 {
     let leaves: Vec<Hash32> = entries
         .iter()
@@ -190,7 +190,7 @@ pub fn compute_loyalty_merkle_root(entries: &[MinerLoyaltyEntry]) -> Hash32 {
 }
 
 // ============================================================
-// Сборщики с гарантированной сортировкой
+// Collectors with guaranteed sorting
 // ============================================================
 
 pub fn collect_sorted_share_entries(share_count: &HashMap<MinerId, u64>) -> Vec<MinerShareEntry> {
