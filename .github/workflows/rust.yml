@@ -25,6 +25,7 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
 
     - name: Build
-      env:
-        LIBCLANG_PATH: /usr/lib/llvm-14/lib
-      run: cargo build --release --verbose
+      run: |
+        export LIBCLANG_PATH=$(find /usr/lib -name "libclang.so*" -exec dirname {} \; | head -n 1)
+        echo "Using LIBCLANG_PATH: $LIBCLANG_PATH"
+        cargo build --release --verbose
