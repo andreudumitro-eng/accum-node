@@ -366,10 +366,10 @@ text
 | B | 2,500 | 50 | 10,000,000 | 0.5 | 0.5 | 0.2 | 0.44 |
 | C | 1,600 | 10 | 0 | 0.4 | 0.1 | 0.0 | 0.26 |
 
-**Rewards:**
-- Miner A: 42.35 ACM
-- Miner B: 18.59 ACM
-- Miner C: 11.06 ACM
+**Rewards (sum_PoCI = 1.70, Epoch Reward = 72 ACM):**
+- Miner A: (1.0 / 1.70) × 72 = **42.35 ACM**
+- Miner B: (0.44 / 1.70) × 72 = **18.64 ACM** 
+- Miner C: (0.26 / 1.70) × 72 = **11.01 ACM**
 
 ---
 
