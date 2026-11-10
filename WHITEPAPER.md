@@ -132,7 +132,6 @@ All fields in little‑endian.
 ### Block Validity
 hash = Argon2id(header_bytes)
 
-text
 
 Block is valid if:
 
@@ -152,12 +151,10 @@ Block is valid if:
 hash = Argon2id(header_bytes)
 Share is valid if: hash < target_share
 
-text
 
 **Protocol rule:**
 target_share = target_block << 8
 
-text
 
 This means each found block corresponds to ~256 valid shares, ensuring low reward variance and making solo mining viable.
 
@@ -179,7 +176,6 @@ All fields in little‑endian.
 Maximum shares per miner per epoch:
 MAX_SHARES_PER_MINER_PER_EPOCH = 5000
 
-text
 
 Shares exceeding this limit are ignored.
 
@@ -192,7 +188,6 @@ Upon receiving share packet:
 3. Perform cheap pre‑filter:
 prefilter = SHA256(header || nonce)
 
-text
 
 If `prefilter > share_prefilter_target`, reject without computing Argon2.
 
@@ -222,7 +217,6 @@ No automatic bond slashing for invalid shares.
 ## Miner Identity
 miner_id = RIPEMD160(SHA256(compressed_secp256k1_pubkey))
 
-text
 
 Properties:
 • Compatible with Bitcoin P2PKH addresses
@@ -249,7 +243,6 @@ All PoCI accruals and rewards are strictly tied to `miner_id`.
 Bond is created through a special bond output:
 scriptPubKey = OP_BOND
 
-text
 
 Properties:
 • Bond output cannot be spent until `lock_height + 20,160`
@@ -261,12 +254,10 @@ Properties:
 If `bond_i >= MINIMUM_BOND_LYT`:
 norm_bond_i = bond_i / max_bond_in_epoch
 
-text
 
 If `bond_i < MINIMUM_BOND_LYT`:
 norm_bond_i = 0 (no contribution)
 
-text
 
 **Example:**
 
@@ -292,45 +283,23 @@ Bond is burned only in cases of:
 Initial value:
 loyalty_i = 0
 
-text
-
 Epoch participation (≥ 1 valid share):
 loyalty_i = loyalty_i + 1
 
-text
-
 Missed epoch (no valid shares):
-loyalty_i = max(loyalty_i * 0.7, loyalty_i // 2)
+loyalty_i = max(floor(loyalty_i * 0.7), floor(loyalty_i / 2))
 
-text
+**Grace Period:** Upon returning from an absence of 3 or more epochs, the first 3 missed epochs use a decay factor of **0.5** instead of the standard 0.7. This provides a softer recovery curve for returning miners.
 
-Grace period: First 3 missed epochs after returning from absence use decay factor 0.5.
-
-### Examples
-
-**Scenario A: Continuous Participation**
-Epoch 1: 0 → 1
-Epoch 2: 1 → 2
-Epoch 3: 2 → 3
-Epoch 4: 3 → 4
-→ After one year: loyalty ≈ 365
-
-text
-
-**Scenario B: Long Break**
+**Example:**
 Epoch 1‑100: loyalty = 100
-Epoch 101: 100 → 70 (missed)
-Epoch 102: 70 → 49 (missed)
-Epoch 103: 49 → 34 (missed)
-Epoch 104: 34 → 17 (missed, //2)
-Epoch 105: 17 → 8 (missed, //2)
-
-text
-
+Epoch 101 (missed): 100 × 0.7 = 70
+Epoch 102 (missed): 70 × 0.7 = 49
+Epoch 103 (missed): 49 × 0.7 = 34
+Epoch 104 (missed, grace period): 34 × 0.5 = 17
+Epoch 105 (missed, grace period): 17 × 0.5 = 8
 ### Loyalty Normalization in PoCI
 norm_loyalty_i = loyalty_i / max_loyalty_in_epoch
-
-text
 
 ---
 
@@ -339,24 +308,20 @@ text
 ### Basic Formula
 PoCI_i = 0.6 × norm_shares_i + 0.2 × norm_loyalty_i + 0.2 × norm_bond_i
 
-text
 
 ### Component Normalization
 norm_X_i = X_i / max_X_in_epoch
 
-text
 
 ### Shares Normalization = Square Root
 norm_shares_i = sqrt(shares_raw_i) / max_sqrt_in_epoch
 
-text
 
 Where `max_sqrt_in_epoch = max(sqrt(shares_raw_j) for all j)`.
 
 ### Reward Based on PoCI
 reward_i = (PoCI_i / sum_PoCI) × (EPOCH_REWARD_LYT + tx_fees)
 
-text
 
 ### PoCI Calculation Example
 
@@ -383,7 +348,6 @@ miner_id_1: [share1, share2, ...],
 miner_id_2: [share3, share4, ...],
 }
 
-text
 
 **Memory Usage:** ~180 MB per epoch (1000 miners × 1000 shares).
 
@@ -393,7 +357,6 @@ At epoch end (block N+1439):
 epoch_commit_root = Merkle(all_shares)
 broadcast: epoch_commit { epoch_index, root, timestamp }
 
-text
 
 ### Conflict Resolution
 
@@ -415,7 +378,6 @@ If local root != received root, request missing shares via `getshares`. Resoluti
 ### Formula
 new_target = old_target × (actual_time_span / 7200)
 
-text
 
 Where `actual_time_span = timestamp[block_N+119] - timestamp[block_N]`.
 
@@ -423,7 +385,6 @@ Where `actual_time_span = timestamp[block_N+119] - timestamp[block_N]`.
 if new_target > old_target × 1.25: new_target = old_target × 1.25
 if new_target < old_target × 0.75: new_target = old_target × 0.75
 
-text
 
 ---
 
@@ -550,7 +511,6 @@ DIFFICULTY_ADJUSTMENT_INTERVAL = 120
 TARGET_ADJUSTMENT_TIME = 7,200
 MAX_DIFFICULTY_CHANGE = 0.25
 
-text
 
 ### Error Handling (Rust Example)
 
