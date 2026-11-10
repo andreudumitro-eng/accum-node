@@ -83,6 +83,7 @@ This calculation assumes that every scheduled block is successfully produced and
 
 The actual circulating supply growth may differ depending on reward distribution, burning mechanisms, and other protocol-level adjustments.
 
+*Note: This calculation applies to Year 1 only. Subsequent years have halvings as described in the Treasury & Halvings section.*
 ---
 
 ## Cryptographic Parameters
@@ -309,32 +310,44 @@ norm_loyalty_i = loyalty_i / max_loyalty_in_epoch
 PoCI_i = 0.6 × norm_shares_i + 0.2 × norm_loyalty_i + 0.2 × norm_bond_i
 
 
-### Component Normalization
-norm_X_i = X_i / max_X_in_epoch
+### Component Normalization (Protocol Constants)
 
+To ensure consensus across all nodes, normalization uses fixed protocol constants, not the dynamic set of miners in the current epoch.
 
-### Shares Normalization = Square Root
-norm_shares_i = sqrt(shares_raw_i) / max_sqrt_in_epoch
+norm_shares_i = sqrt(shares_raw_i) / sqrt(MAX_SHARES_PER_MINER_PER_EPOCH)
+norm_loyalty_i = loyalty_i / MAX_LOYALTY_VALUE
+norm_bond_i = sqrt(bond_i) / sqrt(MAX_BOND_LYT)
 
-
-Where `max_sqrt_in_epoch = max(sqrt(shares_raw_j) for all j)`.
+Where:
+- MAX_SHARES_PER_MINER_PER_EPOCH = 5000
+- MAX_LOYALTY_VALUE = 730
+- MAX_BOND_LYT = 10,000,000,000 LYT (1000 ACM)
 
 ### Reward Based on PoCI
 reward_i = (PoCI_i / sum_PoCI) × (EPOCH_REWARD_LYT + tx_fees)
 
+### Treasury & Halvings
+
+- **Treasury:** 7% of each epoch reward is allocated to the ACCUM Treasury address for ecosystem development and community grants. The remaining 93% is distributed to miners based on their PoCI score.
+- **Halvings:** The base epoch reward decreases annually to control long-term inflation and ensure a fair distribution over time:
+  - Year 1: 72 ACM
+  - Year 2: 28.8 ACM
+  - Year 3: 14.4 ACM
+  - Year 4: 7.2 ACM
+  - Year 5+: 0.72 ACM
 
 ### PoCI Calculation Example
 
 | Miner | Shares | Loyalty | Bond (LYT) | Norm Shares | Norm Loyalty | Norm Bond | PoCI |
 |-------|--------|---------|------------|-------------|--------------|-----------|------|
-| A | 10,000 | 100 | 50,000,000 | 1.0 | 1.0 | 1.0 | 1.0 |
-| B | 2,500 | 50 | 10,000,000 | 0.5 | 0.5 | 0.2 | 0.44 |
-| C | 1,600 | 10 | 0 | 0.4 | 0.1 | 0.0 | 0.26 |
+| A | 10,000 | 100 | 50,000,000 | 1.0 | 0.137 | 0.0707 | 0.64 |
+| B | 2,500 | 50 | 10,000,000 | 0.707 | 0.068 | 0.0316 | 0.444 |
+| C | 1,600 | 10 | 0 | 0.566 | 0.014 | 0.0 | 0.34 |
 
-**Rewards (sum_PoCI = 1.70, Epoch Reward = 72 ACM):**
-- Miner A: (1.0 / 1.70) × 72 = **42.35 ACM**
-- Miner B: (0.44 / 1.70) × 72 = **18.64 ACM** 
-- Miner C: (0.26 / 1.70) × 72 = **11.01 ACM**
+**Rewards (sum_PoCI = 1.424, Epoch Reward = 72 ACM):**
+- Miner A: (0.64 / 1.424) × 72 = **32.36 ACM**
+- Miner B: (0.444 / 1.424) × 72 = **22.45 ACM**
+- Miner C: (0.34 / 1.424) × 72 = **17.19 ACM**
 
 ---
 
@@ -366,25 +379,32 @@ If local root != received root, request missing shares via `getshares`. Resoluti
 
 ## Difficulty Adjustment
 
-### Parameters (UPDATED)
+### Parameters
 
 | Parameter | Value |
 |-----------|-------|
 | Adjustment interval | every 120 blocks |
-| Target interval time | 7,200 seconds (120 blocks × 60 seconds) |
+| Target interval time | 7,140 seconds (119 intervals × 60 seconds) |
 | Adjustment function | linear adjustment |
 | Bounds | ±25% per adjustment |
+| Maximum target | Target::genesis() (pow_limit) |
 
 ### Formula
-new_target = old_target × (actual_time_span / 7200)
 
+The algorithm uses exactly `interval` timestamps (120 blocks). The actual time span is calculated between the **first** and the **last** timestamp in the window, which represents **119 intervals** (not 120):
 
-Where `actual_time_span = timestamp[block_N+119] - timestamp[block_N]`.
+actual_time = timestamp[last] - timestamp[first]
+
+expected_time = TARGET_BLOCK_TIME × (interval - 1) = 60 × 119 = 7140 seconds
+
+new_target = current_target × (clamped_actual_time / expected_time)
+
+Where `clamped_actual_time` is bounded to `[expected_time × 0.75, expected_time × 1.25]`.
 
 **Clamp:**
-if new_target > old_target × 1.25: new_target = old_target × 1.25
-if new_target < old_target × 0.75: new_target = old_target × 0.75
-
+if new_target > current_target × 1.25: new_target = current_target × 1.25
+if new_target < current_target × 0.75: new_target = current_target × 0.75
+Also, `new_target` cannot exceed `Target::genesis()` (the maximum allowed target, i.e., the easiest difficulty).
 
 ---
 
