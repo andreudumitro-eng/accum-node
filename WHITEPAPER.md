@@ -63,11 +63,25 @@ ACCUM solves classical PoW problems by redefining reward distribution. Instead o
 
 ### Monetary Transparency
 
-Annual supply = 72 × 365 × 10⁷ + 0.05 × 365 × 24 × 60 × 10⁷ LYT  
-= 262,800,000,000 LYT + 1,576,800,000 LYT  
-= 264,376,800,000 LYT/year = 26.44 ACM/year
+The annual emission is calculated based on the block generation interval and the fixed block reward. The calculation below represents the total scheduled block rewards over a 365-day period, assuming continuous block production.
 
-Inflation = 26.44 / 150,000,000 = 0.0176% (confirmed)
+**Calculation:**
+
+* Block interval = 60 seconds
+* Blocks per day = (24 × 60 × 60) / 60 = 1,440 blocks/day
+* Daily emission = 1,440 blocks × 0.05 ACM = 72 ACM/day
+* Annual emission = 72 ACM/day × 365 days = 26,280 ACM/year
+* Annual emission in LYT = 26,280 ACM × 10,000,000 LYT/ACM = 262,800,000,000 LYT/year
+
+**Conclusion:**
+
+* Total scheduled annual emission = 26,280 ACM/year
+* Equivalent annual emission = 262,800,000,000 LYT/year
+* Annual emission relative to the maximum supply of 150,000,000 ACM = 0.01752%
+
+This calculation assumes that every scheduled block is successfully produced and receives the full block reward of 0.05 ACM.
+
+The actual circulating supply growth may differ depending on reward distribution, burning mechanisms, and other protocol-level adjustments.
 
 ---
 
