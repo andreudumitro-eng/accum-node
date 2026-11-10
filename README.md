@@ -52,7 +52,9 @@ ACCUM utilizes **Argon2id** (RFC 9106) with a memory hardness of **256 MiB** per
 
 ### ⚖️ Slashing & Economic Security
 Malicious behavior is financially suicidal. ACCUM enforces a strict **Bond Lockup** mechanism (~14 days). 
-*   Any attempt at **Equivocation** (double-signing blocks) or **Invalid Share Flooding** (>30% invalid shares) results in a **100% slashing of the miner's bond**.
+
+*   Any attempt at **Equivocation** (double-signing blocks) results in a **100% slashing of the miner's bond**.
+*   **Invalid Share Flooding** (>30% invalid shares) results in a **temporary 3-epoch mining ban** without automatic bond slashing.
 
 ---
 
