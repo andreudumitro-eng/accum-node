@@ -2567,19 +2567,30 @@ impl Node {
         let target_prev_hash = foreign_blocks[0].header.prev_hash;
         let mut check_height = start_height;
 
-        loop {
-            // Ищем в storage (база данных), а не в памяти
+        // 1. Ищем в последних 100 блоках
+        let limit = start_height.saturating_sub(100);
+        while check_height >= limit {
             if let Ok(Some(our_block)) = self.storage.get_block(check_height) {
                 let our_hash = our_block.header.hash(&mut self.argon2);
                 if our_hash == target_prev_hash {
                     return Some((check_height, our_hash));
                 }
             }
-
-            if check_height == 0 {
-                break;
-            }
+            if check_height == 0 { break; }
             check_height -= 1;
+        }
+
+        // 2. Если не нашли, ищем по чекпоинтам
+        println!("[sync] Not found in recent 100 blocks, checking checkpoints...");
+        for cp in self.checkpoints.iter().rev() {
+            if cp.height <= start_height {
+                if let Ok(Some(our_block)) = self.storage.get_block(cp.height) {
+                    let our_hash = our_block.header.hash(&mut self.argon2);
+                    if our_hash == target_prev_hash {
+                        return Some((cp.height, our_hash));
+                    }
+                }
+            }
         }
 
         None
