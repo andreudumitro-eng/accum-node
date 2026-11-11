@@ -2567,12 +2567,22 @@ impl Node {
         let target_prev_hash = foreign_blocks[0].header.prev_hash;
         let mut check_height = start_height;
 
-        // 1. Ищем в последних 100 блоках
+        // 1. Check the current height first
+        if let Ok(Some(our_block)) = self.storage.get_block(check_height) {
+            let our_hash = our_block.header.hash(&mut self.argon2);
+            if our_hash == target_prev_hash {
+                println!("[sync] Found common ancestor at height {} (current)", check_height);
+                return Some((check_height, our_hash));
+            }
+        }
+
+        // 2. Search in the last 100 blocks
         let limit = start_height.saturating_sub(100);
         while check_height >= limit {
             if let Ok(Some(our_block)) = self.storage.get_block(check_height) {
                 let our_hash = our_block.header.hash(&mut self.argon2);
                 if our_hash == target_prev_hash {
+                    println!("[sync] Found common ancestor at height {} (recent)", check_height);
                     return Some((check_height, our_hash));
                 }
             }
@@ -2580,19 +2590,48 @@ impl Node {
             check_height -= 1;
         }
 
-        // 2. Если не нашли, ищем по чекпоинтам
-        println!("[sync] Not found in recent 100 blocks, checking checkpoints...");
+        // 3. Search checkpoints
         for cp in self.checkpoints.iter().rev() {
             if cp.height <= start_height {
                 if let Ok(Some(our_block)) = self.storage.get_block(cp.height) {
                     let our_hash = our_block.header.hash(&mut self.argon2);
                     if our_hash == target_prev_hash {
+                        println!("[sync] Found common ancestor at checkpoint height {}", cp.height);
                         return Some((cp.height, our_hash));
                     }
                 }
             }
         }
 
+        // 4. Deep search with step 24
+        println!("[sync] Deep search for common ancestor (step 24)...");
+        let mut h = start_height;
+        while h > 0 {
+            h = h.saturating_sub(24);
+            if let Ok(Some(our_block)) = self.storage.get_block(h) {
+                let our_hash = our_block.header.hash(&mut self.argon2);
+                if our_hash == target_prev_hash {
+                    println!("[sync] Found common ancestor at height {} (deep)", h);
+                    return Some((h, our_hash));
+                }
+            }
+        }
+
+        // 5. Fallback: full scan from our height down to 0
+        println!("[sync] No common ancestor found. Performing full scan...");
+        let mut our_h = self.height;
+        while our_h > 0 {
+            if let Ok(Some(our_block)) = self.storage.get_block(our_h) {
+                let our_hash = our_block.header.hash(&mut self.argon2);
+                if our_hash == target_prev_hash {
+                    println!("[sync] Found common ancestor at our height {} (fallback)", our_h);
+                    return Some((our_h, our_hash));
+                }
+            }
+            our_h -= 1;
+        }
+
+        println!("[sync] Common ancestor NOT found even with full search.");
         None
     }
 
