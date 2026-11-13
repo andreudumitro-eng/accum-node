@@ -1247,34 +1247,19 @@ impl SyncManager {
             node.height + 1,
         );
 
-        // 1. Find common ancestor for the whole batch.
-        // 1. First, check if the very first block of the batch fits directly on our tip.
-        let mut common_height = node.height;
-        let mut found_ancestor = false;
-
-        // Try to find the previous hash of the first foreign block in our storage.
-        let target_prev_hash = fork_blocks[0].header.prev_hash;
-
-        // Look for it in our recent blocks (checking 50 blocks back)
-        for h in (0..=node.height).rev().take(50) {
-            if let Ok(Some(our_block)) = node.storage.get_block(h) {
-                if our_block.header.hash(&mut node.argon2) == target_prev_hash {
-                    common_height = h;
-                    found_ancestor = true;
-                    break;
+              // 1. Find common ancestor for the whole batch using smart search.
+              let (common_height, _common_hash) = match node.find_common_ancestor(fork_blocks, node.height) {
+                Some(x) => x,
+                None => {
+                    println!("[sync] Could not find common ancestor even with full search. Skipping batch.");
+                    return Ok(node.height);
                 }
-            }
-        }
-
-        if !found_ancestor {
-            println!("[sync] Could not find common ancestor in recent blocks. Skipping batch.");
-            return Ok(node.height);
-        }
-
-        println!(
-            "🔀 [sync] Common ancestor at height {}. Comparing work...",
-            common_height
-        );
+            };
+    
+            println!(
+                "🔀 [sync] Common ancestor at height {}. Comparing work...",
+                common_height
+            );
 
         // 2. Compare total work: reorg only if the foreign branch is
         //    strictly heavier than ours from the fork point.
