@@ -1251,8 +1251,13 @@ impl SyncManager {
               let (common_height, _common_hash) = match node.find_common_ancestor(fork_blocks, node.height) {
                 Some(x) => x,
                 None => {
-                    println!("[sync] Could not find common ancestor even with full search. Skipping batch.");
-                    return Ok(node.height);
+                    println!("[sync] No common ancestor found. Rolling back 100 blocks to retry...");
+                    let target_height = node.height.saturating_sub(100);
+                    if let Err(e) = node.rollback_to(target_height) {
+                        println!("[sync] Rollback failed: {}", e);
+                        return Ok(node.height); 
+                    }
+                    return Err("Rolled back 100 blocks for retry".to_string());
                 }
             };
     
@@ -1471,3 +1476,6 @@ impl SyncManager {
         Ok(false)
     }
 }
+
+
+
