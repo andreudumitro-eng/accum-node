@@ -2564,7 +2564,15 @@ impl Node {
             return None;
         }
 
+        // 0. Check our in-memory chain first
         let target_prev_hash = foreign_blocks[0].header.prev_hash;
+        for (i, header) in self.blocks.iter().enumerate().rev() {
+            let hash = header.hash(&mut self.argon2);
+            if hash == target_prev_hash {
+                println!("[sync] Found common ancestor at height {} (in-memory)", i);
+                return Some((i as Height, hash));
+            }
+        }
         let mut check_height = start_height;
 
         // 1. Check the current height first
